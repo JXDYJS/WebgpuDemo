@@ -16,7 +16,7 @@ fn vertex_main(@location(0) position: vec2<f32>,@location(1) color:vec4<f32>) ->
 
 const PI: f32 = 3.141592;
 const EPSILON: f32 = 1e-3;
-const NUM_STEPS: i32 = 32;
+const NUM_STEPS: i32 = 16;
 const ITER_GEOMETRY: i32 = 3;
 const ITER_FRAGMENT: i32 = 5;
 const SEA_HEIGHT: f32 = 0.6;
@@ -36,6 +36,9 @@ struct Uniforms {
 
 fn SEA_TIME() -> f32 { return 1.0 + uniforms.iTime * SEA_SPEED; }
 fn EPSILON_NRM() -> f32 { return 0.1 / uniforms.iResolution.x; }
+fn TIME() -> f32 {return uniforms.iTime * 0.3;}
+fn ANGLE() -> vec3<f32> {return vec3<f32>(sin(TIME()*3.0)*0.1,sin(TIME())*0.2+0.3,TIME());}
+fn POS() -> vec3<f32> {return vec3<f32>(0.0,3.5,TIME() * 5.0);}
 
 fn fromEuler(ang: vec3<f32>) -> mat3x3<f32> {
     let a1 = vec2<f32>(sin(ang.x), cos(ang.x));
@@ -179,7 +182,11 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
         return TracingResult(tx, ori + dir * tx, true);
     }
     
-    var hm: f32 = map(ori);
+    // var hm: f32 = map(ori);
+    tx = POS().y / dir.y + 5.0;
+    tm = POS().y / dir.y - 5.0;
+    var hm = map(ori + dir * tm);
+    hx = map(ori + dir * tx);
     for(var i: i32 = 0; i < NUM_STEPS; i++) {
         let tmid: f32 = mix(tm, tx, hm / (hm - hx));
         p = ori + dir * tmid;
@@ -205,19 +212,21 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     let ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
     var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-2.0));
     dir.z += length(dir.xy) * 0.14;
-    return normalize(dir);
+    return normalize(dir) * fromEuler(ANGLE());
 } 
-const vec3<f32> pos = vec3<f32>(3.0,3.0,3.0);
+//const pos:vec3<f32> = vec3<f32>(3.0,3.0,3.0);
 
 fn get_pixel(uv:vec2<f32>)->vec3<f32>{
     let dir = calculate_dir(uv);
-    let res = heightMapTracing(pos, dir);
+    let res = heightMapTracing(POS(), dir);
     let sky_color = getSkyColor(dir);
-    if(res.hit_sky) return sky_color;
+    if(res.hit_sky){ 
+        return sky_color;
+    }
 
-    let dist = res.position - pos;
+    let dist = res.position - POS();
     let n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
-    let light = normalize(vec3<f32>(0.0, 0.8, 0.4));
+    let light = normalize(vec3<f32>(0.0, 1.0, 0.8));
     let sea_color = getSeaColor(res.position, n, light, dir, dist);
     let alp = 1 - smoothstep(-0.02,0.0,dir.y);
     return mix(sky_color,sea_color,alp);
@@ -226,5 +235,5 @@ fn get_pixel(uv:vec2<f32>)->vec3<f32>{
 
 @fragment
 fn fragment_main(@location(0) uv: vec2<f32>,@location(1) color: vec4<f32>)-> @location(0) vec4<f32> {
-    return vec4<f32>(get_pixel(uv),1.0);
+    return vec4<f32>(pow(get_pixel(uv),vec3<f32>(0.65)),1.0);
 }

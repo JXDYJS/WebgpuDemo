@@ -8,6 +8,10 @@ export default function WaterDemo() {
   const deviceRef = useRef(null); // 新增设备引用
   const uniformBufferRef = useRef(null); // 新增uniform缓冲区引用
   const bindGroupRef = useRef(null); // 需要添加这行
+  const lastFrameRef = useRef(0);
+
+  const TARGET_FPS = 30;
+ const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
   const errorStyle = {
     color: '#ff4444',
@@ -61,17 +65,27 @@ export default function WaterDemo() {
         });
         //配置画布
         const dpr = window.devicePixelRatio || 1;
-        canvas.width = 800 * dpr;
-        canvas.height = 600 * dpr;
-        canvas.style.width = '800px';
-        canvas.style.height = '600px';
+        const screenWidth = window.innerWidth * dpr;
+        const screenHeight = window.innerHeight * dpr;
+
+        canvas.width = screenWidth / 2;  // 物理像素减半
+        canvas.height = screenHeight / 2;
+
+      // CSS拉伸填满窗口
+      canvas.style.width = '100vw';
+      canvas.style.height = '100vh';
+
+        // canvas.width = 800 * dpr;
+        // canvas.height = 600 * dpr;
+        // canvas.style.width = '800px';
+        // canvas.style.height = '600px';
 
         // 4. 配置上下文
         const context = canvas.getContext('webgpu');
         if (!context) throw new Error("无法获取WebGPU上下文");
         
         const format = navigator.gpu.getPreferredCanvasFormat();
-        context.configure({ device, format, alphaMode: 'opaque' });
+        context.configure({ device, format,size: [canvas.width, canvas.height] ,alphaMode: 'opaque' });
 
         // 5. 创建顶点缓冲区
         const vertices = new Float32Array([
@@ -148,13 +162,18 @@ export default function WaterDemo() {
         }).catch(e => { throw new Error(`管线创建失败: ${e.message}`) });
 
         // 7. 启动渲染循环
+        const startTime = performance.now();
         const render = () => {
           try {
+            const now = performance.now();
+            const elapsed = now - lastFrameRef.current;
+
             const encoder = device.createCommandEncoder();
             const texture = context.getCurrentTexture();
             const uniformData = new Float32Array(16);
             const dataView = new DataView(uniformData.buffer);
-            const time = (performance.now() - startTime) / 1000;
+
+            const time = (now - startTime) / 1000;
             dataView.setFloat32(0, time, true); // iTime offset 0
             dataView.setFloat32(8, canvas.width, true); // iResolution.x offset 8
             dataView.setFloat32(12, canvas.height, true); // iResolution.y offset 12
@@ -165,14 +184,18 @@ export default function WaterDemo() {
                 uniformData.byteOffset,
                 uniformData.byteLength
               );
+              // if (elapsed < FRAME_INTERVAL) {
+              //   animationFrameId.current = requestAnimationFrame(render);
+              //   return;//如果没有达到时间则不渲染
+              // }
+              lastFrameRef.current = now; 
             
             if (!texture) throw new Error("无法获取当前纹理");
             
             const pass = encoder.beginRenderPass({
               colorAttachments: [{
                 view: texture.createView(),
-                clearValue: [0,0,0,1],
-                loadOp: 'clear',
+                loadOp: 'load',
                 storeOp: 'store'
               }]
             });
@@ -184,6 +207,7 @@ export default function WaterDemo() {
               throw new Error("顶点数据不完整");
             }
             
+            pass.setBindGroup(0, bindGroupRef.current);
             pass.draw(4);
             pass.end();
 
@@ -194,6 +218,18 @@ export default function WaterDemo() {
             cancelAnimationFrame(animationFrameId.current);
           }
         };
+
+        const initialEncoder = device.createCommandEncoder();
+        const initialPass = initialEncoder.beginRenderPass({
+          colorAttachments: [{
+            view: context.getCurrentTexture().createView(),
+            clearValue: [0, 1, 0, 1],
+            loadOp: 'clear',  // 初始清除
+            storeOp: 'store'
+          }]
+        });
+        initialPass.end();
+        device.queue.submit([initialEncoder.finish()]);
 
         render(); // 开始渲染循环
 
@@ -219,8 +255,6 @@ export default function WaterDemo() {
 
   return (
     <div className="gpu-demo">
-      <h2>WebGPU Demo</h2>
-      
       {error && (
         <div style={errorStyle}>
           <strong>⚠️ 发生错误:</strong>
@@ -230,14 +264,14 @@ export default function WaterDemo() {
 
       <canvas 
         ref={canvasRef}
-        width={800}
-        height={600}
         style={{ 
-          border: `2px solid ${error ? '#ff4444' : '#333'}`,
-          display: error ? 'none' : 'block',
-          width: "1600px",   // 显示尺寸：1600×1200（放大 200%）
-          height: "1200px",
-          imageRendering: "crisp-edges"
+          position: 'fixed',  // 防止滚动条影响
+          top: 0,
+          left: 0,
+          width: '100%',      // 使用百分比而非vw/vh
+          height: '100%',
+          imageRendering: 'pixelated',
+          border: 'none'      // 移除边框防止溢出
         }}
       />
     </div>
