@@ -6,9 +6,21 @@ export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名�
   const [shaderCode, setShaderCode] = useState(null);
   const animationFrameId = useRef(null);
   const deviceRef = useRef(null);
+  const contextRef = useRef(null);
   const uniformBufferRef = useRef(null);
   const bindGroupRef = useRef(null);
   const lastFrameRef = useRef(0);
+
+  const deviceGeneration = useRef(0);
+const isUnmounted = useRef(false);
+
+useEffect(() => {
+  isUnmounted.current = false;
+  return () => { isUnmounted.current = true; };
+}, []);
+
+  const initializationLock = { current: false };
+
 
   const TARGET_FPS = 30;
   const FRAME_INTERVAL = 1000 / TARGET_FPS;
@@ -38,9 +50,32 @@ export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名�
   };
 
   useEffect(() => {
+      if (initializationLock.current) return;
+      initializationLock.current = true;
     const initWebGPU = async () => {
       try {
-        setError(null);
+        const generationBeforeInit = ++deviceGeneration.current;
+        const init = async () => {
+          if (animationFrameId.current) {
+            cancelAnimationFrame(animationFrameId.current);
+            animationFrameId.current = null;
+          }
+          
+          // 异步等待设备销毁
+          if (deviceRef.current) {
+            const oldDevice = deviceRef.current;
+            deviceRef.current = null;
+            await oldDevice.destroy(); 
+          }
+    
+          // 解除上下文绑定
+          if (contextRef.current) {
+            contextRef.current.unconfigure();
+            contextRef.current = null;
+          }
+    
+          await new Promise(requestAnimationFrame); // 确保GPU进程完成
+        };
         
         // 1. 加载着色器
         const code = await import('./shader/waterdemo.wgsl?raw')
@@ -57,6 +92,8 @@ export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名�
         
         const adapter = await navigator.gpu.requestAdapter();
         if (!adapter) throw new Error("无法获取WebGPU适配器");
+
+        if (contextRef.current) contextRef.current.unconfigure();
         
         const device = await adapter.requestDevice();
         deviceRef.current = device;
@@ -78,6 +115,7 @@ export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名�
         // 4. 配置上下文（修改3: 每次分辨率变化时重新配置）
         const context = canvas.getContext('webgpu');
         if (!context) throw new Error("无法获取WebGPU上下文");
+        contextRef.current = context;
         
         const format = navigator.gpu.getPreferredCanvasFormat();
         context.configure({ 
@@ -163,13 +201,23 @@ export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名�
 
         // 启动渲染循环
         const startTime = performance.now();
-        const render = () => {
+        let lastFrameTime = 0;
+        
+        const render = (timestamp) => {
+          if (!deviceRef.current || deviceRef.current.destroyed) {
+            return;
+          }
+          const currentDevice = deviceRef.current;
           try {
             const now = performance.now();
             const elapsed = now - lastFrameRef.current;
 
             const encoder = device.createCommandEncoder();
             const texture = context.getCurrentTexture();
+            if (texture.device?.id !== deviceRef.current?.id) {
+              throw new Error("纹理与当前设备不匹配！");
+            }
+            texture.autoReleaseAfterRender = true;
             const uniformData = new Float32Array(16);
             const dataView = new DataView(uniformData.buffer);
 
@@ -194,7 +242,7 @@ export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名�
             const pass = encoder.beginRenderPass({
               colorAttachments: [{
                 view: texture.createView(),
-                loadOp: 'load',
+                loadOp: 'clear',
                 storeOp: 'store'
               }]
             });
@@ -210,7 +258,9 @@ export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名�
             pass.draw(4);
             pass.end();
 
-            device.queue.submit([encoder.finish()]);
+            const commandBuffer = encoder.finish(); 
+            device.queue.submit([commandBuffer]);
+            //encoder.destroy();
             animationFrameId.current = requestAnimationFrame(render);
           } catch (e) {
             setError(`渲染错误: ${e.message}`);
@@ -246,7 +296,7 @@ export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名�
         cancelAnimationFrame(animationFrameId.current);
       }
       // 修改5: 仅当组件卸载时销毁设备
-      if (deviceRef.current && !resolutionScale) {
+      if (deviceRef.current) {
         deviceRef.current.destroy();
         deviceRef.current = null;
       }

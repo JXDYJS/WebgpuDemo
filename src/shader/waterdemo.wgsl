@@ -16,7 +16,7 @@ fn vertex_main(@location(0) position: vec2<f32>,@location(1) color:vec4<f32>) ->
 
 const PI: f32 = 3.141592;
 const EPSILON: f32 = 1e-3;
-const NUM_STEPS: i32 = 16;
+const NUM_STEPS: i32 = 8;
 const ITER_GEOMETRY: i32 = 4;
 const ITER_FRAGMENT: i32 = 6;
 const SEA_HEIGHT: f32 = 0.6;
