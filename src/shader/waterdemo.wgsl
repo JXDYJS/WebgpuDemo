@@ -219,6 +219,7 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
 
 fn get_pixel(uv:vec2<f32>)->vec3<f32>{
     let dir = calculate_dir(uv);
+    if(dir.y > 0.1){return getSkyColor(dir);}
     let res = heightMapTracing(POS(), dir);
     let sky_color = getSkyColor(dir);
     if(res.hit_sky){ 
