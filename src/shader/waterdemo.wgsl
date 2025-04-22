@@ -17,8 +17,8 @@ fn vertex_main(@location(0) position: vec2<f32>,@location(1) color:vec4<f32>) ->
 const PI: f32 = 3.141592;
 const EPSILON: f32 = 1e-3;
 const NUM_STEPS: i32 = 16;
-const ITER_GEOMETRY: i32 = 3;
-const ITER_FRAGMENT: i32 = 5;
+const ITER_GEOMETRY: i32 = 4;
+const ITER_FRAGMENT: i32 = 6;
 const SEA_HEIGHT: f32 = 0.6;
 const SEA_CHOPPY: f32 = 4.0;
 const SEA_SPEED: f32 = 0.8;
@@ -35,10 +35,10 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 fn SEA_TIME() -> f32 { return 1.0 + uniforms.iTime * SEA_SPEED; }
-fn EPSILON_NRM() -> f32 { return 0.1 / uniforms.iResolution.x; }
-fn TIME() -> f32 {return uniforms.iTime * 0.3;}
+fn EPSILON_NRM() -> f32 { return 0.05 / uniforms.iResolution.x; }
+fn TIME() -> f32 {return uniforms.iTime * 0.1;}
 fn ANGLE() -> vec3<f32> {return vec3<f32>(sin(TIME()*3.0)*0.1,sin(TIME())*0.2+0.3,TIME());}
-fn POS() -> vec3<f32> {return vec3<f32>(0.0,3.5,TIME() * 5.0);}
+fn POS() -> vec3<f32> {return vec3<f32>(0.0,5.0,TIME() * 5.0);}
 
 fn fromEuler(ang: vec3<f32>) -> mat3x3<f32> {
     let a1 = vec2<f32>(sin(ang.x), cos(ang.x));
@@ -182,9 +182,9 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
         return TracingResult(tx, ori + dir * tx, true);
     }
     
-    // var hm: f32 = map(ori);
-    tx = POS().y / dir.y + 5.0;
-    tm = POS().y / dir.y - 5.0;
+    //var hm: f32 = map(ori);
+    tx = min(POS().y / dir.y,tx);
+    tm = max(POS().y / dir.y - 5.0,0.0);
     var hm = map(ori + dir * tm);
     hx = map(ori + dir * tx);
     for(var i: i32 = 0; i < NUM_STEPS; i++) {
@@ -212,7 +212,8 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     let ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
     var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-2.0));
     dir.z += length(dir.xy) * 0.14;
-    return normalize(dir) * fromEuler(ANGLE());
+    //return normalize(dir);
+     return normalize(dir) * fromEuler(ANGLE());
 } 
 //const pos:vec3<f32> = vec3<f32>(3.0,3.0,3.0);
 

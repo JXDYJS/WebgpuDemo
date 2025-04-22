@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 
-export default function WaterDemo() {
+export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名改为resolutionScale
   const canvasRef = useRef(null);
   const [error, setError] = useState(null);
   const [shaderCode, setShaderCode] = useState(null);
   const animationFrameId = useRef(null);
-  const deviceRef = useRef(null); // 新增设备引用
-  const uniformBufferRef = useRef(null); // 新增uniform缓冲区引用
-  const bindGroupRef = useRef(null); // 需要添加这行
+  const deviceRef = useRef(null);
+  const uniformBufferRef = useRef(null);
+  const bindGroupRef = useRef(null);
   const lastFrameRef = useRef(0);
 
   const TARGET_FPS = 30;
- const FRAME_INTERVAL = 1000 / TARGET_FPS;
+  const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
   const errorStyle = {
     color: '#ff4444',
@@ -59,33 +59,33 @@ export default function WaterDemo() {
         if (!adapter) throw new Error("无法获取WebGPU适配器");
         
         const device = await adapter.requestDevice();
-        deviceRef.current = device; // 保存设备引用
+        deviceRef.current = device;
         device.lost.then(info => {
           throw new Error(`设备丢失: ${info.message}`);
         });
-        //配置画布
+
+        // 修改2: 分辨率计算增加取整
         const dpr = window.devicePixelRatio || 1;
-        const screenWidth = window.innerWidth * dpr;
-        const screenHeight = window.innerHeight * dpr;
+        const screenWidth = Math.floor(window.innerWidth * dpr * resolutionScale); 
+        const screenHeight = Math.floor(window.innerHeight * dpr * resolutionScale);
 
-        canvas.width = screenWidth / 2;  // 物理像素减半
-        canvas.height = screenHeight / 2;
+        canvas.width = screenWidth;
+        canvas.height = screenHeight;
 
-      // CSS拉伸填满窗口
-      canvas.style.width = '100vw';
-      canvas.style.height = '100vh';
+        canvas.style.width = '100vw';
+        canvas.style.height = '100vh';
 
-        // canvas.width = 800 * dpr;
-        // canvas.height = 600 * dpr;
-        // canvas.style.width = '800px';
-        // canvas.style.height = '600px';
-
-        // 4. 配置上下文
+        // 4. 配置上下文（修改3: 每次分辨率变化时重新配置）
         const context = canvas.getContext('webgpu');
         if (!context) throw new Error("无法获取WebGPU上下文");
         
         const format = navigator.gpu.getPreferredCanvasFormat();
-        context.configure({ device, format,size: [canvas.width, canvas.height] ,alphaMode: 'opaque' });
+        context.configure({ 
+          device, 
+          format,
+          size: [canvas.width, canvas.height], // 使用新尺寸
+          alphaMode: 'opaque' 
+        });
 
         // 5. 创建顶点缓冲区
         const vertices = new Float32Array([
@@ -101,32 +101,32 @@ export default function WaterDemo() {
         new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
         vertexBuffer.unmap();
 
-    //  创建Uniform缓冲区
+        // 创建Uniform缓冲区
         const uniformBuffer = device.createBuffer({
-            size: 256, // 对齐到256字节
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+          size: 256,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
         uniformBufferRef.current = uniformBuffer;
 
         // 6. 创建绑定组布局
         const bindGroupLayout = device.createBindGroupLayout({
-            entries: [{
-                binding: 0,
-                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-                buffer: { type: 'uniform' }
-            }]
-            });
+          entries: [{
+            binding: 0,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            buffer: { type: 'uniform' }
+          }]
+        });
     
-            // 7. 创建绑定组
-            bindGroupRef.current = device.createBindGroup({
-            layout: bindGroupLayout,
-            entries: [{
-                binding: 0,
-                resource: { buffer: uniformBuffer }
-            }]
-            });
+        // 7. 创建绑定组
+        bindGroupRef.current = device.createBindGroup({
+          layout: bindGroupLayout,
+          entries: [{
+            binding: 0,
+            resource: { buffer: uniformBuffer }
+          }]
+        });
 
-        // 6. 创建渲染管线
+        // 创建渲染管线
         const vertexShader = device.createShaderModule({ code });
         const fragmentShader = device.createShaderModule({ code });
 
@@ -137,9 +137,9 @@ export default function WaterDemo() {
           .catch(e => { throw new Error(`片段着色器错误: ${e.message}`) });
 
         const pipeline = await device.createRenderPipelineAsync({
-            layout: device.createPipelineLayout({
-                bindGroupLayouts: [bindGroupLayout]
-              }),
+          layout: device.createPipelineLayout({
+            bindGroupLayouts: [bindGroupLayout]
+          }),
           vertex: {
             module: vertexShader,
             entryPoint: 'vertex_main',
@@ -161,7 +161,7 @@ export default function WaterDemo() {
           }
         }).catch(e => { throw new Error(`管线创建失败: ${e.message}`) });
 
-        // 7. 启动渲染循环
+        // 启动渲染循环
         const startTime = performance.now();
         const render = () => {
           try {
@@ -173,22 +173,21 @@ export default function WaterDemo() {
             const uniformData = new Float32Array(16);
             const dataView = new DataView(uniformData.buffer);
 
+            // 修改4: 使用当前canvas的实际尺寸
             const time = (now - startTime) / 1000;
-            dataView.setFloat32(0, time, true); // iTime offset 0
-            dataView.setFloat32(8, canvas.width, true); // iResolution.x offset 8
-            dataView.setFloat32(12, canvas.height, true); // iResolution.y offset 12
+            dataView.setFloat32(0, time, true);
+            dataView.setFloat32(8, canvas.width, true); 
+            dataView.setFloat32(12, canvas.height, true);
+            
             device.queue.writeBuffer(
-                uniformBuffer,
-                0,
-                uniformData.buffer,
-                uniformData.byteOffset,
-                uniformData.byteLength
-              );
-              // if (elapsed < FRAME_INTERVAL) {
-              //   animationFrameId.current = requestAnimationFrame(render);
-              //   return;//如果没有达到时间则不渲染
-              // }
-              lastFrameRef.current = now; 
+              uniformBuffer,
+              0,
+              uniformData.buffer,
+              uniformData.byteOffset,
+              uniformData.byteLength
+            );
+
+            lastFrameRef.current = now; 
             
             if (!texture) throw new Error("无法获取当前纹理");
             
@@ -219,21 +218,22 @@ export default function WaterDemo() {
           }
         };
 
+        // 初始清除
         const initialEncoder = device.createCommandEncoder();
         const initialPass = initialEncoder.beginRenderPass({
           colorAttachments: [{
             view: context.getCurrentTexture().createView(),
             clearValue: [0, 1, 0, 1],
-            loadOp: 'clear',  // 初始清除
+            loadOp: 'clear',
             storeOp: 'store'
           }]
         });
         initialPass.end();
         device.queue.submit([initialEncoder.finish()]);
 
-        render(); // 开始渲染循环
+        render();
 
-      } catch (error) { // 外层catch捕获所有初始化错误
+      } catch (error) {
         setError(error.message);
         console.error("初始化失败:", error);
       }
@@ -241,17 +241,17 @@ export default function WaterDemo() {
 
     initWebGPU();
 
-    // 清理函数
     return () => {
       if (animationFrameId.current) {
         cancelAnimationFrame(animationFrameId.current);
       }
-      if (deviceRef.current) {
-        deviceRef.current.destroy(); // 销毁设备
+      // 修改5: 仅当组件卸载时销毁设备
+      if (deviceRef.current && !resolutionScale) {
+        deviceRef.current.destroy();
         deviceRef.current = null;
       }
     };
-  }, []);
+  }, [resolutionScale]); // 修改6: 添加依赖项
 
   return (
     <div className="gpu-demo">
@@ -265,13 +265,13 @@ export default function WaterDemo() {
       <canvas 
         ref={canvasRef}
         style={{ 
-          position: 'fixed',  // 防止滚动条影响
+          position: 'fixed',
           top: 0,
           left: 0,
-          width: '100%',      // 使用百分比而非vw/vh
+          width: '100%',
           height: '100%',
-          imageRendering: 'pixelated',
-          border: 'none'      // 移除边框防止溢出
+          imageRendering: 'crisp-edges',
+          border: 'none'
         }}
       />
     </div>
