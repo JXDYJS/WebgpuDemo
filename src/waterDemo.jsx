@@ -9,6 +9,7 @@ export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名�
   const contextRef = useRef(null);
   const uniformBufferRef = useRef(null);
   const bindGroupRef = useRef(null);
+  const atmosphereScatteringLUT = useRef(null);
   const lastFrameRef = useRef(0);
 
   const deviceGeneration = useRef(0);
@@ -125,6 +126,65 @@ useEffect(() => {
           alphaMode: 'opaque' 
         });
 
+
+        const load3DTexture = async (device) => {
+          try {
+            // 1. 加载二进制文件
+            const response = await fetch('./image/scattering.dat');
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const arrayBuffer = await response.arrayBuffer();
+            
+            // 2. 验证数据尺寸 (32x64x32 RGB16F)
+            const expectedSize = 32 * 64 * 32 * 6; // 3 channels × 2 bytes each
+            if (arrayBuffer.byteLength !== expectedSize) {
+              throw new Error(`Invalid texture data size. Expected ${expectedSize}, got ${arrayBuffer.byteLength}`);
+            }
+            // 3. 创建GPU纹理
+            const texture = device.createTexture({
+              size: [32, 64, 32],  // width, height, depth
+              format: 'rgba16float', // WebGPU不支持rgb16float，需要转换为RGBA
+              usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+              dimension: '3d'
+            });
+            atmosphereScatteringLUT.current = texture;
+        
+            // 4. 将RGB数据转换为RGBA（添加Alpha通道）
+            const srcData = new Uint16Array(arrayBuffer);
+
+            console.log('数据示例:', {
+              R: srcData[0].toString(16), // 应为半精度浮点
+              G: srcData[1].toString(16),
+              B: srcData[2].toString(16)
+            });
+
+            const dstData = new Uint16Array(32 * 64 * 32 * 4); // RGBA
+            
+            for (let i = 0, j = 0; i < srcData.length; i += 3, j += 4) {
+              dstData[j] = srcData[i];     // R
+              dstData[j + 1] = srcData[i + 1]; // G
+              dstData[j + 2] = srcData[i + 2]; // B
+              dstData[j + 3] = 0x3C00;     // Alpha=1.0 in half float (0x3C00)
+            }
+        
+            // 5. 上传数据到GPU
+            device.queue.writeTexture(
+              { texture },
+              dstData.buffer,
+              {
+                offset: 0,
+                bytesPerRow: 32 * 4 * 2,   // 32 pixels × 4 channels × 2 bytes
+                rowsPerImage: 64
+              },
+              [32, 64, 32] // 完整3D尺寸
+            );
+        
+            return texture;
+          } catch (e) {
+            throw new Error(`Failed to load 3D texture: ${e.message}`);
+          }
+        };
+
+
         // 5. 创建顶点缓冲区
         const vertices = new Float32Array([
           0, 0,   1,0,0,1,  1,0, 0,1,0,1,
@@ -148,20 +208,54 @@ useEffect(() => {
 
         // 6. 创建绑定组布局
         const bindGroupLayout = device.createBindGroupLayout({
-          entries: [{
-            binding: 0,
-            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-            buffer: { type: 'uniform' }
-          }]
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.FRAGMENT,
+              buffer: { type: 'uniform' }
+            },
+            {
+              binding: 1,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: {
+                sampleType: 'float',
+                viewDimension: '3d'
+              }
+            },
+            {
+              binding: 2,
+              visibility: GPUShaderStage.FRAGMENT,
+              sampler: { type: 'filtering' }
+            }
+          ]
+        });
+
+        const sampler = device.createSampler({
+          addressModeU: 'clamp-to-edge',
+          addressModeV: 'clamp-to-edge',
+          addressModeW: 'clamp-to-edge',
+          magFilter: 'linear',
+          minFilter: 'linear'
         });
     
         // 7. 创建绑定组
+        const scatteringTexture = await load3DTexture(device);
         bindGroupRef.current = device.createBindGroup({
           layout: bindGroupLayout,
-          entries: [{
-            binding: 0,
-            resource: { buffer: uniformBuffer }
-          }]
+          entries: [
+            {
+              binding: 0,
+              resource: { buffer: uniformBuffer }
+            },
+            {
+              binding: 1,
+              resource: scatteringTexture.createView()
+            },
+            {
+              binding: 2,
+              resource: sampler
+            }
+          ]
         });
 
         // 创建渲染管线
