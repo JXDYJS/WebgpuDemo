@@ -8,7 +8,7 @@ struct VertexOutput {
 };
 
 //大气部分函数
-const sun_dir = normalize(vec3<f32>(0.0, 0.8,1.0));
+const sun_dir = normalize(vec3<f32>(0.0, 0.2,1.0));
 const SUN_I: f32 = 1.0;
 const MOON_I: f32 = 1.0;
 const MOON_R: f32 = 0.75;
@@ -19,13 +19,21 @@ const DEGREE: f32 = PI / 180.0;
 
 fn FADE()-> f32{
     if(sun_dir.y < 0.18){
-        return 0.37 + 1.2 * max(0.0, -sun_dir_y);
+        return 0.37 + 1.2 * max(0.0, -sun_dir.y);
     }
     return 0.17;
 }
 
 fn SUN_WEIGHT()-> f32{
     return pow(clamp(1.0 - FADE() * abs(sun_dir.y - 0.18) ,0.0,1.0),2.0);
+}
+
+fn SUN_RAISE()-> f32{
+    return step(0.0001,sun_dir.x) * SUN_WEIGHT();
+}
+
+fn SUN_SET()-> f32{
+    return step(0.0001,-sun_dir.x) * SUN_WEIGHT();
 }
 
 // 天体参数
@@ -56,7 +64,7 @@ fn from_srgb(srgb: vec3<f32>) -> vec3<f32> {
     let linear = select(
         srgb / 12.92,
         pow((srgb + 0.055) / 1.055, vec3<f32>(2.4)),
-        srgb > 0.04045
+        srgb > vec3(0.04045)
     );
     return linear;
 }
@@ -64,6 +72,22 @@ fn from_srgb(srgb: vec3<f32>) -> vec3<f32> {
 fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
     let t = clamp((x - low) / (high - low), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
+}
+
+fn cube(a: f32) -> f32 {
+    return a * a * a;
+}
+
+fn ACESToneMapping(color: vec3<f32>, adapted_lum: f32) -> vec3<f32> {
+    const A: f32 = 2.51;
+    const B: f32 = 0.03;
+    const C: f32 = 2.43;
+    const D: f32 = 0.59;
+    const E: f32 = 0.14;
+
+    let scaled_color = color * adapted_lum;
+    return (scaled_color * (A * scaled_color + B)) / 
+           (scaled_color * (C * scaled_color + D) + E);
 }
 
 fn get_uv_from_unit_range(val: f32, resolution: f32) -> f32 {
@@ -82,7 +106,9 @@ fn atmosphere_mie_phase(nu: f32) -> f32 {
     return (3.0 * (1.0 - gg)) / (8.0 * PI * (2.0 + gg)) * (1.0 + nu * nu) / pow(1.0 + gg - 2.0 * G * nu, 1.5);
 }
 
-fn get_sun_exposure(sun_dir: vec3<f32>, time_sunset: f32, time_sunrise: f32) -> f32 {
+fn get_sun_exposure() -> f32 {
+    let time_sunset = SUN_SET();
+    let time_sunrise = SUN_RAISE();
     let base_scale = 7.0 * SUN_I;
     
     // 蓝调时刻计算
@@ -97,7 +123,9 @@ fn get_sun_exposure(sun_dir: vec3<f32>, time_sunset: f32, time_sunrise: f32) -> 
     return base_scale * daytime_mul;
 }
 
-fn get_sun_tint(sun_dir: vec3<f32>, time_sunset: f32, time_sunrise: f32) -> vec3<f32> {
+fn get_sun_tint() -> vec3<f32> {
+    let time_sunset = SUN_SET();
+    let time_sunrise = SUN_RAISE();
     // 蓝调时刻系数
     let blue_hour = linear_step(
         0.05, 
@@ -118,9 +146,9 @@ fn get_sun_tint(sun_dir: vec3<f32>, time_sunset: f32, time_sunrise: f32) -> vec3
     blue_hour_tint = mix(vec3<f32>(1.0), blue_hour_tint, blue_hour);
     
     // 用户自定义色调（需传入以下常量）
-    const tint_morning = from_srgb(vec3<f32>(1.0, 1.0, 1.0)); // 替换实际参数
-    const tint_noon    = from_srgb(vec3<f32>(1.0, 1.0, 1.0));
-    const tint_evening = from_srgb(vec3<f32>(1.0, 1.0, 1.0));
+    let tint_morning = from_srgb(vec3<f32>(1.0, 1.0, 1.0)); // 替换实际参数
+    let tint_noon    = from_srgb(vec3<f32>(1.0, 1.0, 1.0));
+    let tint_evening = from_srgb(vec3<f32>(1.0, 1.0, 1.0));
     
     var user_tint = mix(tint_noon, tint_morning, time_sunrise);
     user_tint = mix(user_tint, tint_evening, time_sunset);
@@ -246,12 +274,13 @@ fn atmosphere_scattering(
     var atmosphere = sun_contribution + moon_contribution;
 
     // // 后处理饱和度增强
-    // let luma_weights = vec3<f32>(0.2627, 0.6780, 0.0593); // Rec.2020
-    // let luma = dot(atmosphere, luma_weights);
-    // let saturation_factor = 1.5; 
-    // atmosphere = mix(vec3(luma), atmosphere, saturation_factor);
+    let luma_weights = vec3<f32>(0.2627, 0.6780, 0.0593); // Rec.2020
+    let luma = dot(atmosphere, luma_weights);
+    let blue_hour = exp(-150.0 * (sun_dir.y + 0.07283) * (sun_dir.y + 0.07283));
+    let saturation_factor = 1.0; 
+    //atmosphere = mix(vec3(luma), atmosphere, blue_hour * saturation_factor);
 
-    return atmosphere;
+    return  ACESToneMapping(atmosphere,0.5);
 }
 
 //VERTEX
@@ -261,7 +290,7 @@ fn vertex_main(@location(0) position: vec2<f32>,@location(1) color:vec4<f32>) ->
     output.position = vec4<f32>(position * 2.0 - 1.0,0.0,1.0);
     output.uv = vec2<f32>(position.x,position.y);
     output.color = color;
-    output.sun_color = get_sun_exposure()
+    output.sun_color = get_sun_exposure() * get_sun_tint();
     return output;
 }
 
@@ -343,13 +372,14 @@ fn getSkyColor(e: vec3<f32>) -> vec3<f32> {
     ) * 1.1;
 }
 
-fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: vec3<f32>) -> vec3<f32> {  
+fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: vec3<f32>,sun_color:vec3<f32>) -> vec3<f32> {  
     // 菲涅尔项计算
     var fresnel: f32 = clamp(1.0 - dot(n, -eye), 0.0, 1.0);
     fresnel = min(fresnel * fresnel * fresnel, 0.5);
     
     // 反射和折射成分
-    let reflected: vec3<f32> = getSkyColor(reflect(eye, n));    
+    //let reflected: vec3<f32> = getSkyColor(reflect(eye, n));
+    let reflected: vec3<f32> = atmosphere_scattering(reflect(eye, n),sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
     let refracted: vec3<f32> = SEA_BASE + (diffuse(n, l, 80.0) * SEA_WATER_COLOR) * 0.12; 
     
     // 基础颜色混合
@@ -360,9 +390,9 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     color += (SEA_WATER_COLOR * (p.y - SEA_HEIGHT)) * 0.18 * atten;
     
     // 高光添加
-    color += specular(n, l, eye, 60.0);
+    color += ACESToneMapping(specular(n, l, eye, 60.0) * normalize(sun_color),0.25);
     
-    return color;
+    return ACESToneMapping(color,0.5);
 }
 
 fn sea_octave(uv: vec2<f32>, choppy: f32) -> f32 {
@@ -430,7 +460,7 @@ struct TracingResult {
 
 fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     var tm: f32 = 0.0;
-    var tx: f32 = 1000.0;
+    var tx: f32 = 500.0;
     var p: vec3<f32>;
     
     var hx = map(ori + dir * tx);
@@ -468,32 +498,32 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     let ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
     var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-2.0));
     dir.z += length(dir.xy) * 0.14;
+    dir = normalize(dir + vec3(0.0,0.2,0.0));
     //return normalize(dir);
      return normalize(dir) * fromEuler(ANGLE());
 } 
 //const pos:vec3<f32> = vec3<f32>(3.0,3.0,3.0);
 
-fn get_pixel(uv:vec2<f32>)->vec3<f32>{
+fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>)->vec3<f32>{
     let dir = calculate_dir(uv);
-    if(dir.y > 0.1){return getSkyColor(dir);}
+    var sky_color = atmosphere_scattering(dir,sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    //if(dir.y > 0.1){return sky_color;}
     let res = heightMapTracing(POS(), dir);
-    let sky_color = getSkyColor(dir);
-    if(res.hit_sky){ 
-        return sky_color;
-    }
+    // if(res.hit_sky){ 
+    //     return sky_color;
+    // }
 
     let dist = res.position - POS();
     let n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
-    let light = normalize(vec3<f32>(0.0, 1.0, 0.8));
-    let sea_color = getSeaColor(res.position, n, light, dir, dist);
+    let sea_color = getSeaColor(res.position, n, sun_dir, dir, dist,sun_color);
     let alp = 1 - smoothstep(-0.02,0.0,dir.y);
     return mix(sky_color,sea_color,alp);
 }
 
 
 @fragment
-fn fragment_main(@location(0) uv: vec2<f32>,@location(1) color: vec4<f32>)-> @location(0) vec4<f32> {
-    return vec4<f32>(pow(get_pixel(uv),vec3<f32>(0.65)),1.0);
+fn fragment_main(@location(0) uv: vec2<f32>,@location(1) color: vec4<f32>,@location(2) sun_color:vec3<f32>)-> @location(0) vec4<f32> {
+    return vec4<f32>(pow(get_pixel(uv,sun_color),vec3<f32>(0.65)),1.0);
 }
 
 //FRAGMENT
