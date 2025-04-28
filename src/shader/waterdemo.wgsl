@@ -7,8 +7,11 @@ const MOON_I: f32 = 1.0;
 const MOON_R: f32 = 0.75;
 const MOON_G: f32 = 0.83;
 const MOON_B: f32 = 1.0;
+const PI: f32 = 3.141592;
+const EPSILON: f32 = 1e-3;
 const TAU: f32 = 6.283185307179586;
 const DEGREE: f32 = PI / 180.0;
+const TX:f32 = 300.0;
 
 fn FADE()-> f32{
     if(sun_dir.y < 0.18){
@@ -69,6 +72,19 @@ fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
 
 fn cube(a: f32) -> f32 {
     return a * a * a;
+}
+
+fn sqr(a:f32)->f32{
+    return a * a;
+}
+
+fn cubic_length(v:vec2<f32>)->f32 {
+	return pow(cube(abs(v.x)) + cube(abs(v.y)), 0.333333);
+}
+
+fn dampen(x:f32)->f32{
+	let t = clamp(x,0.0,1.0);
+	return t * (2.0 - t);
 }
 
 fn ACESToneMapping(color: vec3<f32>, adapted_lum: f32) -> vec3<f32> {
@@ -275,6 +291,13 @@ fn get_ambient_color(sun_color: vec3<f32>, moon_color: vec3<f32>) -> vec3<f32> {
     sky_color = TAU * mix(sky_color,vec3(sky_color.b) * sqrt(2.0),1.0 / PI);
     return sky_color;
 }
+
+fn border_fog(scene_pos:vec3<f32>,world_dir:vec3<f32>)->f32 {
+    var fog = cubic_length(scene_pos.xz) / TX;
+    fog = exp2(-8.0 * pow(fog,8.0));
+    fog = mix(fog, 1.0, 0.75 * dampen(linear_step(0.0, 0.2, world_dir.y)));
+    return fog;
+}
 //ATOMOSPHERE
 
 //VERTEX
@@ -303,8 +326,6 @@ fn vertex_main(@location(0) position: vec2<f32>,@location(1) color:vec4<f32>) ->
 //VERTEX
 
 //FRAGMENT
-const PI: f32 = 3.141592;
-const EPSILON: f32 = 1e-3;
 const NUM_STEPS: i32 = 8;
 const ITER_GEOMETRY: i32 = 4;
 const ITER_FRAGMENT: i32 = 8;
@@ -388,7 +409,7 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     // 反射和折射成分
     //let reflected: vec3<f32> = getSkyColor(reflect(eye, n));
     let reflected: vec3<f32> = atmosphere_scattering(reflect(eye, n),sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
-    let refracted: vec3<f32> = SEA_BASE  + (diffuse(n, l, 80.0) * normalize(sun_color) * SEA_WATER_COLOR) * 0.12; 
+    let refracted: vec3<f32> = SEA_BASE  + (diffuse(n, l, 80.0) * sun_color * SEA_WATER_COLOR) * 0.12; 
     
     // 基础颜色混合
     var color: vec3<f32> = mix(refracted, reflected, fresnel);
@@ -398,7 +419,7 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     color += (SEA_WATER_COLOR * (p.y - SEA_HEIGHT)) * 0.18 * atten;
     
     // 高光添加
-    color += ACESToneMapping(vec3(specular(n, l, eye, 60.0)) * normalize(sun_color),0.25);
+    color += ACESToneMapping(vec3(specular(n, l, eye, 60.0)) * sun_color,0.25);
     
     return ACESToneMapping(color,0.72);
 }
@@ -468,7 +489,7 @@ struct TracingResult {
 
 fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     var tm: f32 = 0.0;
-    var tx: f32 = 500.0;
+    var tx: f32 = TX;
     var p: vec3<f32>;
     
     var hx = map(ori + dir * tx);
@@ -523,8 +544,19 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
 
     let dist = res.position - POS();
     let n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
-    let sea_color = getSeaColor(res.position, n, sun_dir, dir, dist,sun_color,moon_color,ambient);
+    var sea_color = getSeaColor(res.position, n, sun_dir, dir, dist,sun_color,moon_color,ambient);
     let alp = 1 - smoothstep(-0.02,0.0,dir.y);
+
+    let horizon_dir = normalize(vec3(dir.xz,min(dir.y,-0.1)).xzy);
+    let horizon_color = atmosphere_scattering(horizon_dir,sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    let horizon_fac = linear_step(0.1,1.0,exp(-75 * sqr(sun_dir.y + 0.0496)));
+    let fog_color = mix(sky_color,horizon_color,sqr(horizon_fac));
+    let fog = border_fog(dist,dir);
+    
+    sea_color = mix(fog_color,sea_color,fog);
+    sky_color = mix(fog_color,sky_color,fog);
+
+
     return mix(sky_color,sea_color,alp);
 }
 
