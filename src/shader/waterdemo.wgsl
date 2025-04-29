@@ -1,6 +1,6 @@
 
 //大气部分函数
-const sun_dir = normalize(vec3<f32>(0.0, 0.1,1.0));
+const sun_dir = normalize(vec3<f32>(0.0, 0.8,1.0));
 const moon_dir = normalize(vec3<f32>(0.0, -0.3,1.0));
 const SUN_I: f32 = 1.0;
 const MOON_I: f32 = 1.0;
@@ -434,7 +434,8 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     
     // 反射和折射成分
     //let reflected: vec3<f32> = getSkyColor(reflect(eye, n));
-    let reflected: vec3<f32> = atmosphere_scattering(reflect(eye, n),sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    let rl = reflect(eye, n);
+    let reflected: vec3<f32> = atmosphere_scattering(rl,sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0)) + draw_sun(rl,sun_color);
     let refracted: vec3<f32> = SEA_BASE  + (diffuse(n, l, 80.0) * sun_color * SEA_WATER_COLOR) * 0.12; 
     
     // 基础颜色混合
@@ -445,7 +446,7 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     color += (SEA_WATER_COLOR * (p.y - SEA_HEIGHT)) * 0.18 * atten;
     
     // 高光添加
-    color += ACESToneMapping(vec3(specular(n, l, eye, 60.0)) * sun_color,0.25);
+    //color += ACESToneMapping(vec3(specular(n, l, eye, 60.0)) * sun_color,0.25);
     
     return color;
 }
