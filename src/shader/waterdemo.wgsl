@@ -1,6 +1,6 @@
 
 //大气部分函数
-const sun_dir = normalize(vec3<f32>(0.0, 0.2,1.0));
+const sun_dir = normalize(vec3<f32>(0.0, 0.1,1.0));
 const moon_dir = normalize(vec3<f32>(0.0, -0.3,1.0));
 const SUN_I: f32 = 1.0;
 const MOON_I: f32 = 1.0;
@@ -76,6 +76,22 @@ fn cube(a: f32) -> f32 {
 
 fn sqr(a:f32)->f32{
     return a * a;
+}
+
+fn fast_acos(x:f32) -> f32 {
+	let C0 = 1.57018;
+	let C1 = -0.201877;
+	let C2 = 0.0464619;
+
+	var res = (C2 * abs(x) + C1) * abs(x) + C0; // p(x)
+	res *= sqrt(1.0 - abs(x));
+
+	if(x>=0.0){
+		return res;
+    }
+    else{
+        return PI - res;
+    }
 }
 
 fn cubic_length(v:vec2<f32>)->f32 {
@@ -298,6 +314,15 @@ fn border_fog(scene_pos:vec3<f32>,world_dir:vec3<f32>)->f32 {
     fog = mix(fog, 1.0, 0.75 * dampen(linear_step(0.0, 0.2, world_dir.y)));
     return fog;
 }
+
+fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
+	let nu = dot(ray_dir, sun_dir);
+	let alpha = vec3(0.429, 0.522, 0.614);
+	let center_to_edge = max(2 * (TAU / 360.0) - fast_acos(nu),0.0);
+	let limb_darkening = pow(vec3(1.0 - sqr(1.0 - center_to_edge)), 0.5 * alpha);
+
+	return 40.0 * sun_color * step(0.0, center_to_edge) * limb_darkening;
+}
 //ATOMOSPHERE
 
 //VERTEX
@@ -333,6 +358,7 @@ const SEA_HEIGHT: f32 = 0.6;
 const SEA_CHOPPY: f32 = 4.0;
 const SEA_SPEED: f32 = 0.8;
 const SEA_FREQ: f32 = 0.16;
+const FOV:f32 = tan(radians(60.0));
 const SEA_BASE: vec3<f32> = vec3<f32>(0.0, 0.09, 0.18);
 const SEA_WATER_COLOR: vec3<f32> = vec3<f32>(0.8, 0.9, 0.6) * 0.6;
 const octave_m: mat2x2<f32> = mat2x2<f32>(1.6, 1.2, -1.2, 1.6);
@@ -386,8 +412,8 @@ fn diffuse(n: vec3<f32>, l: vec3<f32>, p: f32) -> f32 {
 }
 
 fn specular(n: vec3<f32>, l: vec3<f32>, e: vec3<f32>, s: f32) -> f32 {
-    let nrm = (s + 8.0) / (PI * 8.0); 
-    return pow(max(dot(reflect(e, n), l), 0.0), s) * nrm;
+    //let nrm = (s + 8.0) / (PI * 8.0); 
+    return pow(max(dot(reflect(e, n), l), 0.0), s);
 }
 
 fn getSkyColor(e: vec3<f32>) -> vec3<f32> {
@@ -421,7 +447,7 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     // 高光添加
     color += ACESToneMapping(vec3(specular(n, l, eye, 60.0)) * sun_color,0.25);
     
-    return ACESToneMapping(color,0.72);
+    return color;
 }
 
 fn sea_octave(uv: vec2<f32>, choppy: f32) -> f32 {
@@ -525,8 +551,8 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
 
 fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     let ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
-    var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-2.0));
-    dir.z += length(dir.xy) * 0.14;
+    var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-FOV));
+    //dir.z += length(dir.xy) * 0.14;
     dir = normalize(dir + vec3(0.0,0.2,0.0));
     //return normalize(dir);
      return normalize(dir) * fromEuler(ANGLE());
@@ -536,6 +562,7 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
 fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
     let dir = calculate_dir(uv);
     var sky_color = atmosphere_scattering(dir,sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    sky_color += draw_sun(dir,sun_color);
     //if(dir.y > 0.1){return sky_color;}
     let res = heightMapTracing(POS(), dir);
     // if(res.hit_sky){ 
