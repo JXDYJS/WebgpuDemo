@@ -1,13 +1,20 @@
 import { useState } from 'react';
 import './WaterDemoControl.css';
 
-export default function WaterDemoControl({ onResolutionChange }) {
+export default function WaterDemoControl({ onResolutionChange, onSunAngleChange }) {
   const [resolution, setResolution] = useState(80);
+  const [sunAngle, setSunAngle] = useState(90); // 默认正午角度
 
-  const handleChange = (e) => {
+  const handleResolutionChange = (e) => {
     const value = parseInt(e.target.value);
     setResolution(value);
     onResolutionChange(value / 100);
+  };
+
+  const handleSunAngleChange = (e) => {
+    const value = parseInt(e.target.value);
+    setSunAngle(value);
+    onSunAngleChange(value);
   };
 
   return (
@@ -20,10 +27,22 @@ export default function WaterDemoControl({ onResolutionChange }) {
           max="100"
           step="5"
           value={resolution}
-          onChange={handleChange}
+          onChange={handleResolutionChange}
           className="resolution-slider"
         />
       </div>
+      {/* <div className="slider-container">
+        <label>太阳角度: {sunAngle}°</label>
+        <input
+          type="range"
+          min="20"
+          max="180"
+          step="1"
+          value={sunAngle}
+          onChange={handleSunAngleChange}
+          className="sun-angle-slider"
+        />
+      </div> */}
     </div>
   );
 }

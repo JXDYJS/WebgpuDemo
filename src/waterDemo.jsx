@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 
-export default function WaterDemo({ resolutionScale }) { // 修改1: 参数名改为resolutionScale
+function angleToSunDirection(angle) {
+
+  const t = (angle - 20) / 160;
+
+  const y = 1.0 / (5 * t + 1.2); 
+  
+  const x = Math.sin(t * Math.PI * 1.8) * 0.6;
+  const z = Math.cos(t * Math.PI * 1.3) * 1.2;
+
+  const length = Math.sqrt(x*x + y*y + z*z);
+  return [x/length, y/length, z/length];
+}
+
+export default function WaterDemo({ resolutionScale,SunAngle}) { // 修改1: 参数名改为resolutionScale
   const canvasRef = useRef(null);
   const [error, setError] = useState(null);
   const [shaderCode, setShaderCode] = useState(null);
@@ -211,7 +224,7 @@ useEffect(() => {
           entries: [
             {
               binding: 0,
-              visibility: GPUShaderStage.FRAGMENT,
+              visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
               buffer: { type: 'uniform' }
             },
             {
@@ -312,14 +325,19 @@ useEffect(() => {
               throw new Error("纹理与当前设备不匹配！");
             }
             texture.autoReleaseAfterRender = true;
-            const uniformData = new Float32Array(16);
+            const uniformData = new Float32Array(32);
             const dataView = new DataView(uniformData.buffer);
 
             // 修改4: 使用当前canvas的实际尺寸
             const time = (now - startTime) / 1000;
+            const sun_dir = angleToSunDirection(SunAngle);
             dataView.setFloat32(0, time, true);
             dataView.setFloat32(8, canvas.width, true); 
             dataView.setFloat32(12, canvas.height, true);
+            dataView.setFloat32(16, sun_dir[0], true);          // sun_dir.x (16)
+            dataView.setFloat32(20, sun_dir[1], true);          // sun_dir.y (20)
+            dataView.setFloat32(24, sun_dir[2], true);          // sun_dir.z (24)
+            dataView.setFloat32(28, 0, true);                   // vec3填充 (28-31)
             
             device.queue.writeBuffer(
               uniformBuffer,

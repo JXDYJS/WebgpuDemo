@@ -36,12 +36,13 @@ import WaterDemo from './waterDemo'
 
 function App() {
   const [resolutionScale, setResolutionScale] = useState(0.8);
+  const [sunAngle, setSunAngle] = useState(90);
 
   return (
     <div>
-      <WaterDemo resolutionScale={resolutionScale} />
+      <WaterDemo resolutionScale={resolutionScale} sunAngle={sunAngle} />
       <WaterDemoControl 
-        onResolutionChange={(scale) => setResolutionScale(scale)}
+        onResolutionChange={(scale) => setResolutionScale(scale)}onSunAngleChange={(angle) => setSunAngle(angle)}
       />
     </div>
   );
