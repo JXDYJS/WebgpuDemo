@@ -24,7 +24,7 @@ export default function WaterDemoControl({ onResolutionChange, onSunAngleChange 
         <input
           type="range"
           min="25"
-          max="100"
+          max="125"
           step="5"
           value={resolution}
           onChange={handleResolutionChange}

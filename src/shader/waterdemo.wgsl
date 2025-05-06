@@ -20,8 +20,8 @@ struct Uniforms {
 
 
 //大气部分函数
-const sun_dir = normalize(vec3<f32>(1.0, 0.6,0.0));
-const moon_dir = normalize(vec3<f32>(0.0, -0.3,1.0));
+const sun_dir = normalize(vec3<f32>(0.0, 0.2,1.0));
+const moon_dir = normalize(vec3<f32>(0.0, -0.3,1.0));//目前不考虑夜晚，所以这行没用
 const SUN_I: f32 = 1.0;
 const MOON_I: f32 = 1.0;
 const MOON_R: f32 = 0.75;
@@ -494,7 +494,6 @@ fn pbr_shading(
     // 漫反射项
     let diffuse_brdf = diffuse_water(albedo, roughness, f0, L,V,H);
     
-    // 能量守恒组合
     let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
     res.diffuse = diffuse_brdf * kD * NoL;
     res.specular = specular_brdf * NoL;
@@ -751,7 +750,7 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     let ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
     var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-FOV));
     //dir.z += length(dir.xy) * 0.14;
-    dir = normalize(dir + vec3(0.0,0.2,0.0));
+    //dir = normalize(dir + vec3(0.0,0.2,0.0));
     //return normalize(dir);
      return normalize(dir) * fromEuler(ANGLE());
 } 
@@ -761,6 +760,7 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     let dir = calculate_dir(uv);
     var sky_color = atmosphere_scattering(dir,sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
     sky_color += draw_sun(dir,sun_color);
+    sky_color = ACESToneMapping(sky_color,0.5);
     let res = heightMapTracing(POS(), dir);
 
     let dist = res.position - POS();
