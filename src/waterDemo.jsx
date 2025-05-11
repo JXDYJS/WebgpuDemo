@@ -1,16 +1,34 @@
 import { useEffect, useRef, useState } from 'react';
 
 function angleToSunDirection(angle) {
+  // 参数规范化与精度控制
+  const clampedAngle = Math.min(Math.max(angle, 20), 180);
+  const t = Number(((clampedAngle - 20) / 160).toFixed(3)); // [0,1]
 
-  const t = (angle - 20) / 160;
-
-  const y = 1.0 / (5 * t + 1.2); 
+  // 垂直分量计算（优化后的曲线）
+  const yBase = 1.0 - t * 0.8;  // 从1.0→0.2
+  const y = yBase - 0.2 * Math.sin(t * Math.PI); // 添加正弦波动
   
-  const x = Math.sin(t * Math.PI * 1.8) * 0.6;
-  const z = Math.cos(t * Math.PI * 1.3) * 1.2;
+  // 水平运动控制（统一相位参数）
+  const phase = t * Math.PI * 1.7; // 相位范围306度
+  const x = Math.sin(phase) * (0.5 - t * 0.3); // 振幅递减
+  const z = Math.cos(phase) * (1.2 + t * 0.6); // Z轴延伸
 
-  const length = Math.sqrt(x*x + y*y + z*z);
-  return [x/length, y/length, z/length];
+  // 精度截断（先计算后归一化）
+  const precisionProcess = v => Number(v.toFixed(3));
+  const rawVec = [
+    precisionProcess(x),
+    precisionProcess(y),
+    precisionProcess(z)
+  ];
+
+  // 带保护机制的归一化
+  const length = Math.sqrt(rawVec[0]**2 + rawVec[1]**2 + rawVec[2]**2) || 1;
+  return [
+    precisionProcess(rawVec[0]/length),
+    precisionProcess(rawVec[1]/length),
+    precisionProcess(rawVec[2]/length)
+  ];
 }
 
 export default function WaterDemo({ resolutionScale,SunAngle}) { // 修改1: 参数名改为resolutionScale
@@ -163,12 +181,6 @@ useEffect(() => {
         
             // 4. 将RGB数据转换为RGBA（添加Alpha通道）
             const srcData = new Uint16Array(arrayBuffer);
-
-            console.log('数据示例:', {
-              R: srcData[0].toString(16), // 应为半精度浮点
-              G: srcData[1].toString(16),
-              B: srcData[2].toString(16)
-            });
 
             const dstData = new Uint16Array(32 * 64 * 32 * 4); // RGBA
             
@@ -331,6 +343,7 @@ useEffect(() => {
             // 修改4: 使用当前canvas的实际尺寸
             const time = (now - startTime) / 1000;
             const sun_dir = angleToSunDirection(SunAngle);
+            console.log(sun_dir);
             dataView.setFloat32(0, time, true);
             dataView.setFloat32(8, canvas.width, true); 
             dataView.setFloat32(12, canvas.height, true);
@@ -413,7 +426,7 @@ useEffect(() => {
         deviceRef.current = null;
       }
     };
-  }, [resolutionScale]); // 修改6: 添加依赖项
+  }, [resolutionScale,SunAngle]); // 修改6: 添加依赖项
 
   return (
     <div className="gpu-demo">

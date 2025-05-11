@@ -12,6 +12,7 @@ https://www.gdcvault.com/play/1024478/PBR-Diffuse-Lighting-for-GGX
 struct Uniforms {
     iTime: f32,
     @align(8) iResolution: vec2<f32>,
+    @align(16) sun_dir: vec3<f32>,
     
 };
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -20,7 +21,8 @@ struct Uniforms {
 
 
 //大气部分函数
-const sun_dir = normalize(vec3<f32>(0.0, 0.2,1.0));
+const sun_dir = normalize(vec3<f32>(1.0, 0.2,0.0));
+//const sun_dir = normalize(uniforms.sun_dir);
 const moon_dir = normalize(vec3<f32>(0.0, -0.3,1.0));//目前不考虑夜晚，所以这行没用
 const SUN_I: f32 = 1.0;
 const MOON_I: f32 = 1.0;
@@ -35,22 +37,22 @@ const DEGREE: f32 = PI / 180.0;
 const TX:f32 = 500.0;
 
 fn FADE()-> f32{
-    if(sun_dir.y < 0.18){
-        return 0.37 + 1.2 * max(0.0, -sun_dir.y);
+    if(uniforms.sun_dir.y < 0.18){
+        return 0.37 + 1.2 * max(0.0, -uniforms.sun_dir.y);
     }
     return 0.17;
 }
 
 fn SUN_WEIGHT()-> f32{
-    return pow(clamp(1.0 - FADE() * abs(sun_dir.y - 0.18) ,0.0,1.0),2.0);
+    return pow(clamp(1.0 - FADE() * abs(uniforms.sun_dir.y - 0.18) ,0.0,1.0),2.0);
 }
 
 fn SUN_RAISE()-> f32{
-    return step(0.0001,sun_dir.x) * SUN_WEIGHT();
+    return step(0.0001,uniforms.sun_dir.x) * SUN_WEIGHT();
 }
 
 fn SUN_SET()-> f32{
-    return step(0.0001,-sun_dir.x) * SUN_WEIGHT();
+    return step(0.0001,-uniforms.sun_dir.x) * SUN_WEIGHT();
 }
 
 // 天体参数
@@ -165,7 +167,7 @@ fn get_sun_exposure() -> f32 {
     let blue_hour = linear_step(
         0.05, 
         1.0, 
-        exp(-190.0 * pow(sun_dir.y + 0.09604, 2.0))
+        exp(-190.0 * pow(uniforms.sun_dir.y + 0.09604, 2.0))
     );
     
     let daytime_mul = 1.0 + 0.5 * (time_sunset + time_sunrise) + 40.0 * blue_hour;
@@ -180,7 +182,7 @@ fn get_sun_tint() -> vec3<f32> {
     let blue_hour = linear_step(
         0.05, 
         1.0, 
-        exp(-190.0 * pow(sun_dir.y + 0.09604, 2.0))
+        exp(-190.0 * pow(uniforms.sun_dir.y + 0.09604, 2.0))
     );
     
     // 早晚色调
@@ -188,7 +190,7 @@ fn get_sun_tint() -> vec3<f32> {
     morning_evening_tint = mix(
         vec3<f32>(1.0), 
         morning_evening_tint, 
-        pow(pulse(0.17, 0.40, sun_dir.y), 2.0)
+        pow(pulse(0.17, 0.40, uniforms.sun_dir.y), 2.0)
     );
     
     // 蓝调时刻色调
@@ -328,7 +330,7 @@ fn atmosphere_scattering(
 
 fn get_ambient_color(sun_color: vec3<f32>, moon_color: vec3<f32>) -> vec3<f32> {
     var sky_dir = normalize(vec3(0.0, 1.0, -0.8));
-    var sky_color = atmosphere_scattering(sky_dir, sun_color, sun_dir, moon_color, moon_dir);
+    var sky_color = atmosphere_scattering(sky_dir, sun_color, uniforms.sun_dir, moon_color, moon_dir);
     sky_color = TAU * mix(sky_color,vec3(sky_color.b) * sqrt(2.0),1.0 / PI);
     return sky_color;
 }
@@ -341,7 +343,7 @@ fn border_fog(scene_pos:vec3<f32>,world_dir:vec3<f32>)->f32 {
 }
 
 fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
-	let nu = dot(ray_dir, sun_dir);
+	let nu = dot(ray_dir, uniforms.sun_dir);
 	let alpha = vec3(0.429, 0.522, 0.614);
 	let center_to_edge = max(2 * (TAU / 360.0) - fast_acos(nu),0.0);
 	let limb_darkening = pow(vec3(1.0 - sqr(1.0 - center_to_edge)), 0.5 * alpha);
@@ -606,7 +608,7 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     // let rl = reflect(eye, n);
     // let h = normalize(-eye + l);
     // let pbr_res = pbr_shading(SEA_WATER_COLOR * sun_color * 0.12,0.002,0.02,0.0,n,l,-eye,h);
-    // let reflected: vec3<f32> = atmosphere_scattering(rl,sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0)) + draw_sun(rl,sun_color);
+    // let reflected: vec3<f32> = atmosphere_scattering(rl,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0)) + draw_sun(rl,sun_color);
     // let refracted: vec3<f32> = SEA_BASE  + (diffuse(n, l, 80.0) * sun_color * SEA_WATER_COLOR) * 0.12; 
     
     // // 基础颜色混合
@@ -631,7 +633,7 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     let rl = reflect(eye, n);
     let h = normalize(-eye + l);
     let pbr_res = pbr_shading(SEA_WATER_COLOR * sun_color * 0.12,0.002,0.02,0.0,n,l,-eye,h);
-    let reflected: vec3<f32> = atmosphere_scattering(rl,sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0)) + draw_sun(rl,sun_color);
+    let reflected: vec3<f32> = atmosphere_scattering(rl,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0)) + draw_sun(rl,sun_color);
     let refracted: vec3<f32> = SEA_BASE  + (pbr_res.diffuse * sun_color) * 0.05; 
     
     // 基础颜色混合
@@ -750,7 +752,7 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     let ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
     var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-FOV));
     //dir.z += length(dir.xy) * 0.14;
-    //dir = normalize(dir + vec3(0.0,0.2,0.0));
+    dir = normalize(dir + vec3(0.0,0.2,0.0));
     //return normalize(dir);
      return normalize(dir) * fromEuler(ANGLE());
 } 
@@ -758,24 +760,25 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
 
 fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
     let dir = calculate_dir(uv);
-    var sky_color = atmosphere_scattering(dir,sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    var sky_color = atmosphere_scattering(dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
     sky_color += draw_sun(dir,sun_color);
     sky_color = ACESToneMapping(sky_color,0.5);
     let res = heightMapTracing(POS(), dir);
 
     let dist = res.position - POS();
     let n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
-    var sea_color = getSeaColor(res.position, n, sun_dir, dir, dist,sun_color,moon_color,ambient);
+    var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color,ambient);
     let alp = 1 - smoothstep(-0.02,0.0,dir.y);
 
     let horizon_dir = normalize(vec3(dir.xz,min(dir.y,-0.1)).xzy);
-    let horizon_color = atmosphere_scattering(horizon_dir,sun_color,sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
-    let horizon_fac = linear_step(0.1,1.0,exp(-75 * sqr(sun_dir.y + 0.0496)));
+    let horizon_color = atmosphere_scattering(horizon_dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    let horizon_fac = linear_step(0.1,1.0,exp(-75 * sqr(uniforms.sun_dir.y + 0.0496)));
     let fog_color = mix(sky_color,horizon_color,sqr(horizon_fac));
     let fog = border_fog(dist,dir);
     
     sea_color = mix(fog_color,sea_color,fog);
     sky_color = mix(fog_color,sky_color,fog);
+    //sky_color = vec3(dot(dir,sun_dir));
 
 
     return mix(sky_color,sea_color,alp);

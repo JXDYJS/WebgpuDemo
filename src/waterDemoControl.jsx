@@ -31,7 +31,7 @@ export default function WaterDemoControl({ onResolutionChange, onSunAngleChange 
           className="resolution-slider"
         />
       </div>
-      {/* <div className="slider-container">
+      <div className="slider-container">
         <label>太阳角度: {sunAngle}°</label>
         <input
           type="range"
@@ -42,7 +42,7 @@ export default function WaterDemoControl({ onResolutionChange, onSunAngleChange 
           onChange={handleSunAngleChange}
           className="sun-angle-slider"
         />
-      </div> */}
+      </div>
     </div>
   );
 }

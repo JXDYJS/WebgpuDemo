@@ -40,9 +40,9 @@ function App() {
 
   return (
     <div>
-      <WaterDemo resolutionScale={resolutionScale} sunAngle={sunAngle} />
+      <WaterDemo resolutionScale={resolutionScale} SunAngle={sunAngle} />
       <WaterDemoControl 
-        onResolutionChange={(scale) => setResolutionScale(scale)}onSunAngleChange={(angle) => setSunAngle(angle)}
+        onResolutionChange={(scale) => setResolutionScale(scale)} onSunAngleChange={(angle) => setSunAngle(angle)}
       />
     </div>
   );
