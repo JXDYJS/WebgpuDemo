@@ -34,7 +34,7 @@ const TAU: f32 = 6.283185307179586;
 const HALF_PI: f32 = PI / 2.0;
 const EPSILON: f32 = 1e-3;
 const DEGREE: f32 = PI / 180.0;
-const TX:f32 = 500.0;
+const TX:f32 = 800.0;
 
 fn FADE()-> f32{
     if(uniforms.sun_dir.y < 0.18){
@@ -746,25 +746,17 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     var tm: f32 = 0.0;
     var tx: f32 = TX;
     var p: vec3<f32>;
+
+    let dis = length(ori - BALL_POS);
+    let d = dis * dot(normalize(BALL_POS - ori), dir);
+    let l = sqrt(dis * dis - d * d);
+    if(l < BALL_RADIUS){
+        return TracingResult(d,ori + dir * d,false,true);
+    }
     
     var hx = map(ori + dir * tx);
     if(hx > 0.0) {
-        let hit_res = RaysphereIntersect(ori,dir,BALL_POS,BALL_RADIUS);
-        if(hit_res.x > 0.0){
-            return TracingResult(hit_res.x,ori + dir * hit_res.x,false,true);
-        }
-        else{
-            return TracingResult(TX,vec3(0.0),true,false);
-        }
-        // let dis = length(ori - BALL_POS);
-        // let d = dis * dot(normalize(BALL_POS - ori), dir);
-        // let l = sqrt(dis * dis - d * d);
-        // if(l < BALL_RADIUS){
-        //     return TracingResult(d,ori + dir * d,false,true);
-        // }
-        // else{
-        //     return TracingResult(TX,vec3(0.0),true,false);
-        // }
+        return TracingResult(TX,vec3(0.0),true,false);
     }
     
     //var hm: f32 = map(ori);
@@ -829,7 +821,7 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     sea_color = mix(fog_color,sea_color,fog);
     sky_color = mix(fog_color,sky_color,fog);
     if(res.hit_ball){
-        sky_color = vec3(0.0);
+        return vec3(0.0);
     }
     //sky_color = dir;
 
