@@ -34,7 +34,7 @@ const TAU: f32 = 6.283185307179586;
 const HALF_PI: f32 = PI / 2.0;
 const EPSILON: f32 = 1e-3;
 const DEGREE: f32 = PI / 180.0;
-const TX:f32 = 800.0;
+const TX:f32 = 500.0;
 
 fn FADE()-> f32{
     if(uniforms.sun_dir.y < 0.18){
@@ -570,7 +570,7 @@ const octave_m: mat2x2<f32> = mat2x2<f32>(1.6, 1.2, -1.2, 1.6);
 
 //BALL
 
-const BALL_RADIUS : f32 = 1.0;
+const BALL_RADIUS : f32 = 2.0;
 const BALL_POS : vec3<f32> = vec3<f32>(0.0, 5.5, -5.0);
 
 fn SEA_TIME() -> f32 { return 1.0 + uniforms.iTime * SEA_SPEED; }
@@ -821,7 +821,7 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     sea_color = mix(fog_color,sea_color,fog);
     sky_color = mix(fog_color,sky_color,fog);
     if(res.hit_ball){
-        return vec3(0.0);
+        return vec3(1.0);
     }
     //sky_color = dir;
 
