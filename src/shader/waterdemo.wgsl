@@ -420,19 +420,10 @@ fn border_fog(scene_pos:vec3<f32>,world_dir:vec3<f32>)->f32 {
     return fog;
 }
 
-// fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
-// 	let nu = dot(ray_dir, uniforms.sun_dir);
-// 	let alpha = vec3(0.429, 0.522, 0.614);
-// 	let center_to_edge = max(2 * (TAU / 360.0) - fast_acos(nu),0.0);
-// 	let limb_darkening = pow(vec3(1.0 - sqr(1.0 - center_to_edge)), 0.5 * alpha);
-
-// 	return 40.0 * sun_color * step(1e-5, center_to_edge) * limb_darkening;
-// }
-
 fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
 	let nu = dot(ray_dir, uniforms.sun_dir);
 	let alpha = vec3(0.429, 0.522, 0.614);
-	let center_to_edge = max(nu - 0.998,0.0);
+	let center_to_edge = max(2 * (TAU / 360.0) - fast_acos(nu),0.0);
 	let limb_darkening = pow(vec3(1.0 - sqr(1.0 - center_to_edge)), 0.5 * alpha);
 
 	return 40.0 * sun_color * step(1e-5, center_to_edge);
@@ -462,7 +453,8 @@ fn visibility_smith_ggx_single(cos_theta: f32, alpha_sq: f32) -> f32 {
     return 1.0 / (cos_theta + sqrt(term1 + alpha_sq));
 }
 
-// Smith双方向遮挡函数
+// Smith双方向遮挡函数（高度相关）
+// 正确的高度相关Smith-Joint遮蔽函数
 fn visibility_smith_ggx_joint(NoL: f32, NoV: f32, alpha_sq: f32) -> f32 {
     let lambda_v = NoV * sqrt( (-NoL * alpha_sq + NoL) * NoL + alpha_sq );
     let lambda_l = NoL * sqrt( (-NoV * alpha_sq + NoV) * NoV + alpha_sq );
@@ -562,7 +554,7 @@ struct pbr_shading_res{
     specular: vec3<f32>
 };
 
-fn pbr_shading_water(
+fn pbr_shading(
     albedo: vec3<f32>,
     roughness: f32,
     f0:f32,
@@ -791,10 +783,12 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
                 ) -> vec3<f32> {  
 
     let fresnel = fresnel_schlick(dot(n, -eye), vec3(0.02));
+    
     //反射和折射成分
+    //let reflected: vec3<f32> = getSkyColor(reflect(eye, n));
     let rl = reflect(eye, n);
     let h = normalize(-eye + l);
-    let pbr_res = pbr_shading_water(SEA_WATER_COLOR * sun_color * 0.12,0.002,0.02,0.0,n,l,-eye,h);
+    let pbr_res = pbr_shading(SEA_WATER_COLOR * sun_color * 0.12,0.002,0.02,0.0,n,l,-eye,h);
     let reflected: vec3<f32> = atmosphere_scattering(rl,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0)) + draw_sun(rl,sun_color);
     let refracted: vec3<f32> = SEA_BASE  + (pbr_res.diffuse * sun_color) * 0.05; 
     
