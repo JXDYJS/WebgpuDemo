@@ -348,7 +348,7 @@ fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
 	let center_to_edge = max(2 * (TAU / 360.0) - fast_acos(nu),0.0);
 	let limb_darkening = pow(vec3(1.0 - sqr(1.0 - center_to_edge)), 0.5 * alpha);
 
-	return 40.0 * sun_color * step(0.0, center_to_edge) * limb_darkening;
+	return 40.0 * sun_color * step(1e-5, center_to_edge) * limb_darkening;
 }
 //ATOMOSPHERE
 
@@ -749,13 +749,17 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
 }
 
 fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
-    let ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
+    var ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
+    ndc_uv.x *= uniforms.iResolution.x / uniforms.iResolution.y;
     var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-FOV));
     //dir.z += length(dir.xy) * 0.14;
     dir = normalize(dir + vec3(0.0,0.2,0.0));
     //return normalize(dir);
-     return normalize(dir) * fromEuler(ANGLE());
-} 
+     return normalize(normalize(dir) * fromEuler(ANGLE()));
+}
+
+
+
 //const pos:vec3<f32> = vec3<f32>(3.0,3.0,3.0);
 
 fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
@@ -778,7 +782,7 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     
     sea_color = mix(fog_color,sea_color,fog);
     sky_color = mix(fog_color,sky_color,fog);
-    //sky_color = vec3(dot(dir,sun_dir));
+    //sky_color = dir;
 
 
     return mix(sky_color,sea_color,alp);
