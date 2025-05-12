@@ -158,23 +158,6 @@ fn atmosphere_mie_phase(nu: f32) -> f32 {
     return (3.0 * (1.0 - gg)) / (8.0 * PI * (2.0 + gg)) * (1.0 + nu * nu) / pow(1.0 + gg - 2.0 * G * nu, 1.5);
 }
 
-fn RaysphereIntersect(ori:vec3<f32>, dir:vec3<f32>, center:vec3<f32>, radius:f32) -> vec2<f32> {
-    let rayOrigin = ori - center;
-    let a = dot(dir, dir);
-    let b = dot(rayOrigin, dir);
-    let c = dot(rayOrigin, rayOrigin) - radius * radius;
-    var d = b * b - 4 * a * c;
-
-    if(d < 0.0){
-        //无交点
-        return vec2<f32>(-1.0, -1.0);
-    }
-    else{
-        d = sqrt(d);
-        return vec2<f32>((-b - d) / (2.0 * a), (-b + d) / (2.0 * a));
-    }
-}
-
 fn get_sun_exposure() -> f32 {
     let time_sunset = SUN_SET();
     let time_sunrise = SUN_RAISE();
@@ -568,16 +551,11 @@ const SEA_BASE: vec3<f32> = vec3<f32>(0.0, 0.09, 0.18);
 const SEA_WATER_COLOR: vec3<f32> = vec3<f32>(0.7, 0.8, 0.9) * 0.6;
 const octave_m: mat2x2<f32> = mat2x2<f32>(1.6, 1.2, -1.2, 1.6);
 
-//BALL
-
-const BALL_RADIUS : f32 = 2.0;
-const BALL_POS : vec3<f32> = vec3<f32>(0.0, 5.5, -5.0);
-
 fn SEA_TIME() -> f32 { return 1.0 + uniforms.iTime * SEA_SPEED; }
 fn EPSILON_NRM() -> f32 { return 0.05 / uniforms.iResolution.x; }
 fn TIME() -> f32 {return uniforms.iTime * 0.1;}
 fn ANGLE() -> vec3<f32> {return vec3<f32>(sin(TIME()*3.0)*0.1,sin(TIME())*0.2+0.3,TIME());}
-fn POS() -> vec3<f32> {return vec3<f32>(0.0,5.0,0.0);}
+fn POS() -> vec3<f32> {return vec3<f32>(0.0,5.0,TIME() * 5.0);}
 
 fn fromEuler(ang: vec3<f32>) -> mat3x3<f32> {
     let a1 = vec2<f32>(sin(ang.x), cos(ang.x));
@@ -738,25 +716,17 @@ fn getNormal(p:vec3<f32>,eps:f32) -> vec3<f32> {
 struct TracingResult {
     distance: f32,
     position: vec3<f32>,
-    hit_sky: bool,
-    hit_ball:bool
+    hit_sky: bool
 };
 
 fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     var tm: f32 = 0.0;
     var tx: f32 = TX;
     var p: vec3<f32>;
-
-    let dis = length(ori - BALL_POS);
-    let d = dis * dot(normalize(BALL_POS - ori), dir);
-    let l = sqrt(dis * dis - d * d);
-    if(l < BALL_RADIUS){
-        return TracingResult(d,ori + dir * d,false,true);
-    }
     
     var hx = map(ori + dir * tx);
     if(hx > 0.0) {
-        return TracingResult(TX,vec3(0.0),true,false);
+        return TracingResult(tx, ori + dir * tx, true);
     }
     
     //var hm: f32 = map(ori);
@@ -781,8 +751,7 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     return TracingResult(
         mix(tm, tx, hm / (hm - hx)),  
         p,
-        false,
-        false                           
+        false                             
     );
 }
 
@@ -791,9 +760,9 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     ndc_uv.x *= uniforms.iResolution.x / uniforms.iResolution.y;
     var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-FOV));
     //dir.z += length(dir.xy) * 0.14;
-    //dir = normalize(dir + vec3(0.0,0.2,0.0));
-    return normalize(dir);
-    //return normalize(normalize(dir) * fromEuler(ANGLE()));
+    dir = normalize(dir + vec3(0.0,0.2,0.0));
+    //return normalize(dir);
+     return normalize(normalize(dir) * fromEuler(ANGLE()));
 }
 
 
@@ -820,9 +789,6 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     
     sea_color = mix(fog_color,sea_color,fog);
     sky_color = mix(fog_color,sky_color,fog);
-    if(res.hit_ball){
-        return vec3(1.0);
-    }
     //sky_color = dir;
 
 
