@@ -3,7 +3,7 @@ import './WaterDemoControl.css';
 
 export default function WaterDemoControl({ onResolutionChange, onSunAngleChange }) {
   const [resolution, setResolution] = useState(80);
-  const [sunAngle, setSunAngle] = useState(90); // 默认正午角度
+  const [sunAngle, setSunAngle] = useState(45); // 默认正午角度
 
   const handleResolutionChange = (e) => {
     const value = parseInt(e.target.value);
@@ -35,8 +35,8 @@ export default function WaterDemoControl({ onResolutionChange, onSunAngleChange 
         <label>太阳角度: {sunAngle}°</label>
         <input
           type="range"
-          min="20"
-          max="180"
+          min="0"
+          max="80"
           step="1"
           value={sunAngle}
           onChange={handleSunAngleChange}

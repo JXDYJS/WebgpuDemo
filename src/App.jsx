@@ -36,7 +36,7 @@ import WaterDemo from './waterDemo'
 
 function App() {
   const [resolutionScale, setResolutionScale] = useState(0.8);
-  const [sunAngle, setSunAngle] = useState(90);
+  const [sunAngle, setSunAngle] = useState(45);
 
   return (
     <div>

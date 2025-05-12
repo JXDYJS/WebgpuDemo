@@ -357,7 +357,7 @@ fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
 	let center_to_edge = max(nu - 0.998,0.0);
 	let limb_darkening = pow(vec3(1.0 - sqr(1.0 - center_to_edge)), 0.5 * alpha);
 
-	return 40.0 * sun_color * step(1e-5, center_to_edge) * limb_darkening;
+	return 40.0 * sun_color * step(1e-5, center_to_edge);
 }
 //ATOMOSPHERE
 
@@ -400,42 +400,42 @@ fn fresnel_dielectric(cos_theta: f32, ior: f32) -> f32 {
     return 0.5 * a * a * (1.0 + b * b);
 }
 
-// fn diffuse_hammon(
-//     albedo: vec3<f32>,
-//     roughness: f32,
-//     f0: f32,
-//     NoL: f32,
-//     NoV: f32,
-//     VoH: f32,
-//     LoV: f32
-// ) -> vec3<f32> {
-//     // 参数预处理
-//     let alpha = roughness * roughness;
-//     let alpha_sq = alpha * alpha;
-//     let sqrt_f0 = sqrt(f0) * 0.99999;
-//     let ior = (1 + sqrt_f0) / (1 - sqrt_f0);
+fn diffuse_hammon(
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0: f32,
+    NoL: f32,
+    NoV: f32,
+    VoH: f32,
+    LoV: f32
+) -> vec3<f32> {
+    // 参数预处理
+    let alpha = roughness * roughness;
+    let alpha_sq = alpha * alpha;
+    let sqrt_f0 = sqrt(f0) * 0.99999;
+    let ior = (1 + sqrt_f0) / (1 - sqrt_f0);
     
-//     // 能量守恒因子
-//     let energy_factor = 1.0 - (4.0 * sqrt(f0) + 5.0 * f0 * f0) / 9.0;
+    // 能量守恒因子
+    let energy_factor = 1.0 - (4.0 * sqrt(f0) + 5.0 * f0 * f0) / 9.0;
     
-//     // 单次散射项
-//     let facing = 0.5 * LoV + 0.5;
-//     let fresnel_l = 1.0 - fresnel_dielectric(max(NoL, 0.01), ior);
-//     let fresnel_v = 1.0 - fresnel_dielectric(max(NoV, 0.01), ior);
-//     let single_smooth = (fresnel_l * fresnel_v) / max(energy_factor,EPSILON);
+    // 单次散射项
+    let facing = 0.5 * LoV + 0.5;
+    let fresnel_l = 1.0 - fresnel_dielectric(max(NoL, 0.01), ior);
+    let fresnel_v = 1.0 - fresnel_dielectric(max(NoV, 0.01), ior);
+    let single_smooth = (fresnel_l * fresnel_v) / max(energy_factor,EPSILON);
     
-//     // 粗糙表面修正项（论文启发式公式）
-//     let single_rough = max(facing, 0.0) * (-0.2 * facing + 0.45) * (1.0 / VoH + 2.0);
+    // 粗糙表面修正项（论文启发式公式）
+    let single_rough = max(facing, 0.0) * (-0.2 * facing + 0.45) * (1.0 / VoH + 2.0);
     
-//     // 混合单次散射项
-//     let single = mix(single_smooth, single_rough, roughness) / PI;
+    // 混合单次散射项
+    let single = mix(single_smooth, single_rough, roughness) / PI;
     
-//     // 多次散射项（论文数值拟合）
-//     let multi = 0.1159 * roughness;
+    // 多次散射项（论文数值拟合）
+    let multi = 0.1159 * roughness;
     
-//     // 最终组合
-//     return albedo * (multi +single);
-// }
+    // 最终组合
+    return albedo * (multi +single);
+}
 
 fn diffuse_water(
     albedo: vec3<f32>,
@@ -510,6 +510,24 @@ fn pbr_shading_water(
     return res;
 }
 
+fn lambertNoTangent(normal: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let theta = 6.283185 * uv.x;
+    
+    // 将v坐标从[0,1]映射到[-1,1]
+    let adjusted_vy = 2.0 * uv.y - 1.0;
+    
+    // 生成球面坐标点
+    let sphere_radius_xy = sqrt(1.0 - adjusted_vy * adjusted_vy);
+    let sphere_point = vec3<f32>(
+        sphere_radius_xy * cos(theta),
+        sphere_radius_xy * sin(theta),
+        adjusted_vy
+    );
+    
+    // 合成并归一化方向向量
+    return normalize(normal + sphere_point);
+}
+
 //PBR
 
 
@@ -554,8 +572,8 @@ const octave_m: mat2x2<f32> = mat2x2<f32>(1.6, 1.2, -1.2, 1.6);
 fn SEA_TIME() -> f32 { return 1.0 + uniforms.iTime * SEA_SPEED; }
 fn EPSILON_NRM() -> f32 { return 0.05 / uniforms.iResolution.x; }
 fn TIME() -> f32 {return uniforms.iTime * 0.1;}
-fn ANGLE() -> vec3<f32> {return vec3<f32>(sin(TIME()*3.0)*0.1,sin(TIME())*0.2+0.3,TIME());}
-fn POS() -> vec3<f32> {return vec3<f32>(0.0,5.0,TIME() * 5.0);}
+fn ANGLE() -> vec3<f32> {return vec3<f32>(sin(TIME()*3.0)*0.1,0.0,TIME());}
+fn POS() -> vec3<f32> {return vec3<f32>(0.0,5.0,0.0);}
 
 fn fromEuler(ang: vec3<f32>) -> mat3x3<f32> {
     let a1 = vec2<f32>(sin(ang.x), cos(ang.x));
@@ -713,20 +731,36 @@ fn getNormal(p:vec3<f32>,eps:f32) -> vec3<f32> {
     return normalize(n);
 }
 
+const ball_pos : vec3<f32> = vec3<f32>(0.0, 6.0, -10.0);
+const ball_radius : f32 = 1.0;
+
+fn get_ball_pos() -> vec3<f32> {
+    return ball_pos * fromEuler(ANGLE());
+}
+
 struct TracingResult {
     distance: f32,
     position: vec3<f32>,
-    hit_sky: bool
+    hit_sky: bool,
+    hit_ball:bool
 };
 
 fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     var tm: f32 = 0.0;
     var tx: f32 = TX;
     var p: vec3<f32>;
+
+    let dis = length(ori - get_ball_pos());
+    let d = dis * dot(normalize(get_ball_pos() - ori), dir);
+    let l = sqrt(dis * dis - d * d);
+    if(l < ball_radius && d > 0.0){
+        let t = sqrt(sqr(ball_radius) - sqr(l));
+        return TracingResult(d - t, ori + dir * (d - t), false,true);
+    }
     
     var hx = map(ori + dir * tx);
     if(hx > 0.0) {
-        return TracingResult(tx, ori + dir * tx, true);
+        return TracingResult(tx, ori + dir * tx, true,false);
     }
     
     //var hm: f32 = map(ori);
@@ -751,7 +785,8 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     return TracingResult(
         mix(tm, tx, hm / (hm - hx)),  
         p,
-        false                             
+        false,
+        false                           
     );
 }
 
@@ -760,9 +795,9 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     ndc_uv.x *= uniforms.iResolution.x / uniforms.iResolution.y;
     var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-FOV));
     //dir.z += length(dir.xy) * 0.14;
-    dir = normalize(dir + vec3(0.0,0.2,0.0));
+    //dir = normalize(dir + vec3(0.0,0.2,0.0));
     //return normalize(dir);
-     return normalize(normalize(dir) * fromEuler(ANGLE()));
+    return normalize(normalize(dir) * fromEuler(ANGLE()));
 }
 
 
@@ -790,6 +825,12 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     sea_color = mix(fog_color,sea_color,fog);
     sky_color = mix(fog_color,sky_color,fog);
     //sky_color = dir;
+    if(res.hit_ball){
+        let base = vec3(1.0,0.0,0.0);
+        let nor = normalize(res.position - get_ball_pos());
+        let dif = max(dot(uniforms.sun_dir,nor),0.0);
+        return vec3(1.0,0.0,0.0) * dif;
+    }
 
 
     return mix(sky_color,sea_color,alp);
