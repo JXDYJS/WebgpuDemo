@@ -471,7 +471,8 @@ fn diffuse_water(
 
 struct pbr_shading_res{
     diffuse: vec3<f32>,
-    specular: vec3<f32>
+    specular: vec3<f32>,
+    F : f32
 };
 
 fn pbr_shading_water(
@@ -507,6 +508,7 @@ fn pbr_shading_water(
     let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
     res.diffuse = diffuse_brdf * kD * NoL;
     res.specular = specular_brdf * NoL;
+    res.F = F;
     return res;
 }
 
@@ -543,6 +545,7 @@ fn pbr_shading(
     let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
     res.diffuse = diffuse_brdf * kD * NoL;
     res.specular = specular_brdf * NoL;
+    res.F = F;
     return res;
 }
 
