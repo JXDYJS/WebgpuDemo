@@ -1,28 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 
 function angleToSunDirection(angle) {
-    // 将输入角度映射到天顶角范围（20°-180° → 80°-0°）
-  const zenith = Math.min(Math.max(angle, 20), 180); // 输入限制
-  const normalized = (zenith - 20) / 160; // [0,1]
-
-  // 天顶角转高度角（0°=地平线，90°=头顶）
-  const altitude = 90 - zenith; 
-
-  // 太阳方位角动态变化（模拟日出→正午→日落）
-  const azimuth = 180 + 60 * Math.sin(normalized * Math.PI); // 120°→180°→240°
-
-  // 球坐标系转换
-  const radAlt = altitude * Math.PI / 180;
-  const radAzi = azimuth * Math.PI / 180;
-  
-  // 三维方向向量计算
-  const x = Math.cos(radAlt) * Math.sin(radAzi); // 东西方向（东正西负）
-  const y = Math.min(Math.sin(radAlt),0.2);                    // 垂直高度
-  const z = -Math.cos(radAlt) * Math.cos(radAzi); // 南北方向（北正南负）
-
-  // 精度控制与返回
-  const precision = v => Number(v.toFixed(3));
-  return [precision(x), precision(y), precision(z)];
+  let c = Math.cos(angle / 180 * Math.PI);
+  let s = Math.sin(angle / 180 * Math.PI);
+  var dir = new Float32Array([c, s, 0.2]);
+  let l = Math.sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+  dir = [dir[0] / l, dir[1] / l, dir[2] / l];
+  return dir;
 }
 
 export default function WaterDemo({ resolutionScale, SunAngle }) {

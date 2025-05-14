@@ -510,6 +510,42 @@ fn pbr_shading_water(
     return res;
 }
 
+fn pbr_shading(
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0:f32,
+    metallic: f32,
+    N: vec3<f32>,
+    L: vec3<f32>,
+    V: vec3<f32>,
+    H: vec3<f32>
+) -> pbr_shading_res {
+    // 几何参数
+    var res: pbr_shading_res;
+    let NoL = max(dot(N, L), 0.0);
+    let NoV = max(dot(N, V), 0.0);
+    let NoH = max(dot(N, H), 0.0);
+    let VoH = max(dot(V, H), 0.0);
+    let LoV = max(dot(L, V), 0.0);
+    
+    // 高光项计算
+    let alpha_sq = (roughness * roughness);
+    let D = distribution_ggx(NoH, alpha_sq);
+    let G = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
+    let F = fresnel_schlick(VoH, mix(vec3<f32>(0.02), albedo, metallic));
+    
+    // 高光BRDF
+    let specular_brdf = (D * G * F) / (4.0 * NoL * NoV + 1e-5);
+    
+    // 漫反射项
+    let diffuse_brdf = diffuse_hammon(albedo, roughness, f0,NoL,NoV, VoH,LoV);
+    
+    let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+    res.diffuse = diffuse_brdf * kD * NoL;
+    res.specular = specular_brdf * NoL;
+    return res;
+}
+
 fn lambertNoTangent(normal: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     let theta = 6.283185 * uv.x;
     
@@ -828,8 +864,11 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     if(res.hit_ball){
         let base = vec3(1.0,0.0,0.0);
         let nor = normalize(res.position - get_ball_pos());
-        let dif = max(dot(uniforms.sun_dir,nor),0.0);
-        return vec3(1.0,0.0,0.0) * dif;
+        let H = normalize(uniforms.sun_dir - dir);
+        let pbr_res = pbr_shading(base,0.1,0.1,0.0,nor,uniforms.sun_dir,-dir,H);
+        let ambient_d = dot(uniforms.sun_dir,nor) * 0.5 + 0.5;
+        let col = pbr_res.specular * sun_color + pbr_res.diffuse + sun_color * 0.02 * base * (ambient_d + 0.1);
+        return col;
     }
 
 

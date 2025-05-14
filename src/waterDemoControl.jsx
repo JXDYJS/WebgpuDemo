@@ -35,8 +35,8 @@ export default function WaterDemoControl({ onResolutionChange, onSunAngleChange 
         <label>太阳角度: {sunAngle}°</label>
         <input
           type="range"
-          min="0"
-          max="80"
+          min="10"
+          max="170"
           step="1"
           value={sunAngle}
           onChange={handleSunAngleChange}
