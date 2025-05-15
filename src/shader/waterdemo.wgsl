@@ -425,7 +425,7 @@ fn diffuse_hammon(
     let single_smooth = (fresnel_l * fresnel_v) / max(energy_factor,EPSILON);
     
     // 粗糙表面修正项（论文启发式公式）
-    let single_rough = max(facing, 0.0) * (-0.2 * facing + 0.45) * (1.0 / VoH + 2.0);
+    let single_rough = max(facing, 0.0) * (-0.2 * facing + 0.45) * (1.0 / max(VoH,0.01) + 2.0);
     
     // 混合单次散射项
     let single = mix(single_smooth, single_rough, roughness) / PI;
@@ -471,8 +471,7 @@ fn diffuse_water(
 
 struct pbr_shading_res{
     diffuse: vec3<f32>,
-    specular: vec3<f32>,
-    F : f32
+    specular: vec3<f32>
 };
 
 fn pbr_shading_water(
@@ -508,7 +507,6 @@ fn pbr_shading_water(
     let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
     res.diffuse = diffuse_brdf * kD * NoL;
     res.specular = specular_brdf * NoL;
-    res.F = F;
     return res;
 }
 
@@ -545,7 +543,6 @@ fn pbr_shading(
     let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
     res.diffuse = diffuse_brdf * kD * NoL;
     res.specular = specular_brdf * NoL;
-    res.F = F;
     return res;
 }
 
@@ -609,7 +606,7 @@ const SEA_WATER_COLOR: vec3<f32> = vec3<f32>(0.7, 0.8, 0.9) * 0.6;
 const octave_m: mat2x2<f32> = mat2x2<f32>(1.6, 1.2, -1.2, 1.6);
 
 fn SEA_TIME() -> f32 { return 1.0 + uniforms.iTime * SEA_SPEED; }
-fn EPSILON_NRM() -> f32 { return 0.05 / uniforms.iResolution.x; }
+fn EPSILON_NRM() -> f32 { return 0.1 / uniforms.iResolution.x; }
 fn TIME() -> f32 {return uniforms.iTime * 0.1;}
 fn ANGLE() -> vec3<f32> {return vec3<f32>(sin(TIME()*3.0)*0.1,0.0,TIME());}
 fn POS() -> vec3<f32> {return vec3<f32>(0.0,5.0,0.0);}
@@ -690,7 +687,7 @@ fn getSeaColor_Ph(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist
 
 fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: vec3<f32>,
                 sun_color:vec3<f32>,moon_color:vec3<f32>,
-                ambient:vec3<f32>) -> vec3<f32> {  
+                ) -> vec3<f32> {  
 
     let fresnel = fresnel_schlick(dot(n, -eye), vec3(0.02));
     //反射和折射成分
@@ -711,6 +708,7 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     color += ACESToneMapping(pbr_res.specular * sun_color,0.25);
     
     return ACESToneMapping(color,0.72);
+    
 }
 
 fn sea_octave(uv: vec2<f32>, choppy: f32) -> f32 {
@@ -725,7 +723,7 @@ fn map(p: vec3<f32>) -> f32 {
     var freq: f32 = SEA_FREQ;
     var amp: f32 = SEA_HEIGHT;
     var choppy: f32 = SEA_CHOPPY;
-    var uv: vec2<f32> = p.xz;
+    var uv: vec2<f32> = p.xz + vec2(0.5);
     uv.x *= 0.75;
     
     var h: f32 = 0.0;
@@ -745,7 +743,7 @@ fn map_detail(p: vec3<f32>) -> f32 {
     var freq: f32 = SEA_FREQ;
     var amp: f32 = SEA_HEIGHT;
     var choppy: f32 = SEA_CHOPPY;
-    var uv: vec2<f32> = p.xz;
+    var uv: vec2<f32> = p.xz + vec2(0.5);
     uv.x *= 0.75;
     
     var h: f32 = 0.0;
@@ -767,6 +765,7 @@ fn getNormal(p:vec3<f32>,eps:f32) -> vec3<f32> {
     n.x = map_detail(vec3<f32>(p.x + eps, p.y, p.z)) - n.y;
     n.z = map_detail(vec3<f32>(p.x, p.y, p.z + eps)) - n.y;
     n.y = eps;
+    let nrm = normalize(n);
     return normalize(n);
 }
 
@@ -780,31 +779,32 @@ fn get_ball_pos() -> vec3<f32> {
 struct TracingResult {
     distance: f32,
     position: vec3<f32>,
-    hit_sky: bool,
-    hit_ball:bool
-};
+    hit_type: u32,// 0 SEA 1 SKY 2 BALL
+}; 
 
-fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
-    var tm: f32 = 0.0;
-    var tx: f32 = TX;
-    var p: vec3<f32>;
-
+fn is_hit_ball(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     let dis = length(ori - get_ball_pos());
     let d = dis * dot(normalize(get_ball_pos() - ori), dir);
     let l = sqrt(dis * dis - d * d);
     if(l < ball_radius && d > 0.0){
         let t = sqrt(sqr(ball_radius) - sqr(l));
-        return TracingResult(d - t, ori + dir * (d - t), false,true);
+        return TracingResult(d - t, ori + dir * (d - t), 2u);
     }
-    
+    return TracingResult(0.0,vec3<f32>(0.0,0.0,0.0),0u);
+}
+
+fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
+    var tm: f32 = 0.0;
+    var tx: f32 = TX;
+    var p: vec3<f32>;
     var hx = map(ori + dir * tx);
     if(hx > 0.0) {
-        return TracingResult(tx, ori + dir * tx, true,false);
+        return TracingResult(tx, ori + dir * tx, 1u);
     }
     
     //var hm: f32 = map(ori);
-    tx = min(POS().y / dir.y,tx);
-    tm = max(POS().y / dir.y - 5.0,0.0);
+    tx = min((POS().y + 2.0) / dir.y,tx);
+    tm = max((POS().y - 3.0) / dir.y,0.0);
     var hm = map(ori + dir * tm);
     hx = map(ori + dir * tx);
     for(var i: i32 = 0; i < NUM_STEPS; i++) {
@@ -819,13 +819,12 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
             tm = tmid;
             hm = hmid;
         }
-        if(abs(hmid) < EPSILON) { break; }
+        if(abs(hmid) < EPSILON / 2.0) { break; }
     }
     return TracingResult(
         mix(tm, tx, hm / (hm - hx)),  
         p,
-        false,
-        false                           
+        0u                         
     );
 }
 
@@ -843,16 +842,15 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
 
 //const pos:vec3<f32> = vec3<f32>(3.0,3.0,3.0);
 
-fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
-    let dir = calculate_dir(uv);
+fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>) -> vec3<f32>{
     var sky_color = atmosphere_scattering(dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
     sky_color += draw_sun(dir,sun_color);
     sky_color = ACESToneMapping(sky_color,0.5);
-    let res = heightMapTracing(POS(), dir);
 
-    let dist = res.position - POS();
+    let res = heightMapTracing(p, dir);
+    let dist = res.position - p;
     let n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
-    var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color,ambient);
+    var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color);
     let alp = 1 - smoothstep(-0.02,0.0,dir.y);
 
     let horizon_dir = normalize(vec3(dir.xz,min(dir.y,-0.1)).xzy);
@@ -863,19 +861,48 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     
     sea_color = mix(fog_color,sea_color,fog);
     sky_color = mix(fog_color,sky_color,fog);
-    //sky_color = dir;
-    if(res.hit_ball){
-        let base = vec3(1.0,0.0,0.0);
-        let nor = normalize(res.position - get_ball_pos());
-        let H = normalize(uniforms.sun_dir - dir);
-        let pbr_res = pbr_shading(base,0.1,0.1,0.0,nor,uniforms.sun_dir,-dir,H);
-        let ambient_d = dot(uniforms.sun_dir,nor) * 0.5 + 0.5;
-        let col = pbr_res.specular * sun_color + pbr_res.diffuse + sun_color * 0.02 * base * (ambient_d + 0.1);
-        return col;
-    }
-
-
     return mix(sky_color,sea_color,alp);
+
+}
+
+fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
+    let dir = calculate_dir(uv);
+    let res = is_hit_ball(POS(),dir);
+    var r:vec3<f32>;
+    var p:vec3<f32>;
+    var nor:vec3<f32>;
+    if(res.hit_type == 2u){
+        nor = normalize(res.position - get_ball_pos());
+        r = reflect(dir,nor);
+        p = res.position;
+    }
+    else{
+        r = dir;
+        p = POS();
+    }
+    let scene_color = get_color(p,r,sun_color,moon_color);
+    var color:vec3<f32>;
+    if(res.hit_type == 2u){
+        let base_color = vec3(1.0,0.0,0.0);
+        let F0 = 0.04;
+        let roughness = 0.8;
+        let metallic = 0.0;
+
+        let pbr_res = pbr_shading(base_color,roughness,F0,metallic,nor,uniforms.sun_dir,-dir,normalize(-dir + uniforms.sun_dir));
+        let scene_pbr_res = pbr_shading(base_color,roughness,F0,metallic,nor,r,-dir,normalize(-dir + r));
+        let n = dot(nor,uniforms.sun_dir) * 0.5 + 0.5;
+        let H = normalize(r - dir);
+        let VoH = max(dot(-dir, H), 0.0);
+        let t = dot(-dir,nor);
+        color = pbr_res.diffuse * sun_color * 0.1 + pbr_res.specular * sun_color +  scene_pbr_res.specular * scene_color * smoothstep(0.02,0.3,t);
+        let ambient = sun_color * (n + 0.5) * 0.3 * base_color;
+        color += ambient * 0.05;
+        color = ACESToneMapping(color,0.5);
+    }
+    else{
+        color = scene_color;
+    }
+    return color;
 }
 
 
