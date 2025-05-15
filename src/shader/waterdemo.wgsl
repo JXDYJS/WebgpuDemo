@@ -828,6 +828,38 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     );
 }
 
+fn pbr_env(    
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0:f32,
+    metallic: f32,
+    N: vec3<f32>,
+    L: vec3<f32>,
+    V: vec3<f32>,
+    H: vec3<f32>) -> vec3<f32>{
+
+    let NoL = dot(N, L);
+    let NoV = max(dot(N, V), 0.0);
+    let NoH = max(dot(N, H), 0.0);
+    let VoH = max(dot(V, H), 0.0);
+    let LoV = max(dot(L, V), 0.0);
+    var cout = vec3<f32>(0.0);
+
+    if(NoL > 0.0){
+        let alpha_sq = (roughness * roughness);
+        //let D = distribution_ggx(NoH, alpha_sq);
+        let G = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
+        let F = fresnel_schlick(VoH, mix(vec3<f32>(0.02), albedo, metallic));
+        
+    }
+}
+
+const env_sample_size:int = 16;
+
+fn get_env_color(p:vec3<f32>,n:vec3<f32>){
+
+}
+
 fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     var ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
     ndc_uv.x *= uniforms.iResolution.x / uniforms.iResolution.y;
@@ -885,7 +917,7 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     if(res.hit_type == 2u){
         let base_color = vec3(1.0,0.0,0.0);
         let F0 = 0.04;
-        let roughness = 0.8;
+        let roughness = 0.3;
         let metallic = 0.0;
 
         let pbr_res = pbr_shading(base_color,roughness,F0,metallic,nor,uniforms.sun_dir,-dir,normalize(-dir + uniforms.sun_dir));
@@ -894,7 +926,7 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
         let H = normalize(r - dir);
         let VoH = max(dot(-dir, H), 0.0);
         let t = dot(-dir,nor);
-        color = pbr_res.diffuse * sun_color * 0.1 + pbr_res.specular * sun_color +  scene_pbr_res.specular * scene_color * smoothstep(0.02,0.3,t);
+        color = pbr_res.diffuse * sun_color * 0.15 + pbr_res.specular * sun_color +  scene_pbr_res.specular * scene_color * smoothstep(0.02,0.3,t);
         let ambient = sun_color * (n + 0.5) * 0.3 * base_color;
         color += ambient * 0.05;
         color = ACESToneMapping(color,0.5);
@@ -909,6 +941,7 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
 @fragment
 fn fragment_main(@location(0) uv: vec2<f32>,@location(1) color: vec4<f32>,@location(2) sun_color:vec3<f32>,@location(3) moon_color:vec3<f32>,@location(4) ambient:vec3<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(pow(get_pixel(uv,sun_color,moon_color,ambient),vec3<f32>(0.65)),1.0);
+
 }
 
 //FRAGMENT

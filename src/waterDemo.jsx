@@ -1,3 +1,5 @@
+
+import { wgsl } from 'https://cdn.jsdelivr.net/npm/wgsl-preprocessor@1.0/wgsl-preprocessor.js';
 import { useEffect, useRef, useState } from 'react';
 
 function angleToSunDirection(angle) {
