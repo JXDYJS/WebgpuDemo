@@ -365,6 +365,12 @@ fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
 //PBR部分
 //
 
+struct Material{
+    albedo:vec3<f32>,
+    f0:vec3<f32>,
+    roughness:f32,
+    metallic:f32,
+};
 
 // GGX法线分布函数
 fn distribution_ggx(NoH: f32, alpha_sq: f32) -> f32 {
@@ -383,6 +389,10 @@ fn visibility_smith_ggx_joint(NoL: f32, NoV: f32, alpha_sq: f32) -> f32 {
     let lambda_v = NoV * sqrt( (-NoL * alpha_sq + NoL) * NoL + alpha_sq );
     let lambda_l = NoL * sqrt( (-NoV * alpha_sq + NoV) * NoV + alpha_sq );
     return 1.0 / (1.0 + lambda_v + lambda_l + 1e-5); // 添加防除零保护
+}
+
+fn f0_to_ior(f0: f32) -> f32 {
+    return (1.0 + sqrt(f0)) / (1.0 - sqrt(f0));
 }
 
 // 菲涅尔近似（Schlick）
@@ -564,6 +574,33 @@ fn lambertNoTangent(normal: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     return normalize(normal + sphere_point);
 }
 
+fn sample_ggx_vndf(viewer_dir: vec3<f32>, alpha: vec2<f32>, hash: vec2<f32>) -> vec3<f32> {
+    // Improved GGX importance sampling function by zombye
+    // https://ggx-research.github.io/publication/2023/06/09/publication-ggx.html
+
+    // Transform viewer direction to the hemisphere configuration
+    var v_dir = normalize(vec3<f32>(alpha * viewer_dir.xy, viewer_dir.z));
+
+    // Sample a reflection direction off the hemisphere
+    let tau: f32 = 6.2831853; // 2 * PI
+    let phi: f32 = tau * hash.x;
+    let cos_theta: f32 = fma(1.0 - hash.y, 1.0 + v_dir.z, -v_dir.z);
+    let sin_theta: f32 = sqrt(clamp(1.0 - cos_theta * cos_theta, 0.0, 1.0));
+    let reflected: vec3<f32> = vec3<f32>(
+        vec2<f32>(cos(phi), sin(phi)) * sin_theta,
+        cos_theta
+    );
+
+    // Evaluate halfway direction
+    let halfway: vec3<f32> = reflected + v_dir;
+
+    // Transform back to hemiellipsoid configuration
+    return normalize(vec3<f32>(
+        alpha * halfway.xy,
+        halfway.z
+    ));
+}
+
 //PBR
 
 
@@ -656,6 +693,18 @@ fn getSkyColor(e: vec3<f32>) -> vec3<f32> {
         1.0 - ey,
         0.6 + (1.0 - ey) * 0.4
     ) * 1.1;
+}
+
+fn get_tbn(n:vec3<f32>)->mat3x3<f32>{
+    var tangent : vec3<f32>;
+    if(n.y > 0.99){
+        tangent = vec3<f32>(1.0,0.0,0.0);
+    }
+    else{
+        tangent = normalize(cross(vec3<f32>(0.0,1.0,0.0),n));
+    }
+    let bitangent = normalize(cross(n,tangent));
+    return mat3x3<f32>(tangent,bitangent,n);
 }
 
 fn getSeaColor_Ph(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: vec3<f32>,
@@ -848,16 +897,12 @@ fn pbr_env(
     if(NoL > 0.0){
         let alpha_sq = (roughness * roughness);
         //let D = distribution_ggx(NoH, alpha_sq);
-        let G = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
-        let F = fresnel_schlick(VoH, mix(vec3<f32>(0.02), albedo, metallic));
-        
+        let v1 = visibility_smith_ggx_single(NoV, alpha_sq);
+        let v2 = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
+        let F = fresnel_dielectric(NoV,f0_to_ior(f0));
+        cout += F * (2.0 * NoL * v2 / v1);
     }
-}
-
-const env_sample_size:int = 16;
-
-fn get_env_color(p:vec3<f32>,n:vec3<f32>){
-
+    return cout;
 }
 
 fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
@@ -874,19 +919,36 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
 
 //const pos:vec3<f32> = vec3<f32>(3.0,3.0,3.0);
 
-fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>) -> vec3<f32>{
+fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) -> vec3<f32>{
     var sky_color = atmosphere_scattering(dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
     sky_color += draw_sun(dir,sun_color);
     sky_color = ACESToneMapping(sky_color,0.5);
 
-    let res = heightMapTracing(p, dir);
-    let dist = res.position - p;
-    let n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
+    var res :TracingResult;
+    var dist :vec3<f32>;
+    var n : vec3<f32>;
+
+    if(trash){
+        //因为要求流平衡，必须要在一些没必要采样颜色的时候采样颜色，故写成这样加速
+        res = TracingResult(0.0,vec3<f32>(0.0,0.0,0.0),0u);
+        dist = vec3<f32>(1.0);
+        n = vec3<f32>(0.0);
+    }
+    else{
+        res = heightMapTracing(p, dir);
+        dist = res.position - p;
+        n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
+    }
     var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color);
     let alp = 1 - smoothstep(-0.02,0.0,dir.y);
 
     let horizon_dir = normalize(vec3(dir.xz,min(dir.y,-0.1)).xzy);
     let horizon_color = atmosphere_scattering(horizon_dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+
+    if(trash){
+        return vec3(0.0);
+    }
+
     let horizon_fac = linear_step(0.1,1.0,exp(-75 * sqr(uniforms.sun_dir.y + 0.0496)));
     let fog_color = mix(sky_color,horizon_color,sqr(horizon_fac));
     let fog = border_fog(dist,dir);
@@ -894,7 +956,24 @@ fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>
     sea_color = mix(fog_color,sea_color,fog);
     sky_color = mix(fog_color,sky_color,fog);
     return mix(sky_color,sea_color,alp);
+}
 
+const ball_material:Material = Material(vec3(1.0,0.0,0.0),vec3(0.1),0.8,0.0);
+const env_sample_size:f32 = 128;
+
+fn get_env_color(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) ->vec3<f32> {
+    var env_color = vec3<f32>(0.0);
+    let tbn = get_tbn(n);
+    for(var i:f32 = 0; i < env_sample_size; i+=1){
+        let hash_uv = vec2<f32>(hash(vec2(i / env_sample_size) + vec2(0.62,0.32)),hash(vec2(i / env_sample_size) + vec2(0.32,0.62)));
+        let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(ball_material.roughness),hash_uv);
+        let rl = reflect(v,microfacet_normal);
+        let t = (trash || dot(rl,n) < 0.01);
+        let color = get_color(p,rl,sun_color,moon_color,t);
+        env_color += color;
+    }
+    env_color /= env_sample_size;
+    return env_color;
 }
 
 fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
@@ -903,22 +982,28 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
     var r:vec3<f32>;
     var p:vec3<f32>;
     var nor:vec3<f32>;
+    var size :i32;
+    var trash:bool;
     if(res.hit_type == 2u){
         nor = normalize(res.position - get_ball_pos());
         r = reflect(dir,nor);
         p = res.position;
+        trash = false;
     }
     else{
         r = dir;
         p = POS();
+        trash = true;
     }
-    let scene_color = get_color(p,r,sun_color,moon_color);
+    let scene_color = get_color(p,r,sun_color,moon_color,false);
+    let env_color = get_env_color(p,nor,dir,sun_color,moon_color,trash);
+
     var color:vec3<f32>;
     if(res.hit_type == 2u){
-        let base_color = vec3(1.0,0.0,0.0);
-        let F0 = 0.04;
-        let roughness = 0.3;
-        let metallic = 0.0;
+        let base_color = ball_material.albedo;
+        let F0 = ball_material.f0.x;
+        let roughness = ball_material.roughness;
+        let metallic = ball_material.metallic;
 
         let pbr_res = pbr_shading(base_color,roughness,F0,metallic,nor,uniforms.sun_dir,-dir,normalize(-dir + uniforms.sun_dir));
         let scene_pbr_res = pbr_shading(base_color,roughness,F0,metallic,nor,r,-dir,normalize(-dir + r));
@@ -929,7 +1014,9 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
         color = pbr_res.diffuse * sun_color * 0.15 + pbr_res.specular * sun_color +  scene_pbr_res.specular * scene_color * smoothstep(0.02,0.3,t);
         let ambient = sun_color * (n + 0.5) * 0.3 * base_color;
         color += ambient * 0.05;
-        color = ACESToneMapping(color,0.5);
+        let env_res = pbr_env(base_color,roughness,F0,metallic,nor,r,-dir,normalize(-dir + r));
+        //let env_color = get_env_color(p,nor,dir);
+        color = ACESToneMapping(env_color,0.5);
     }
     else{
         color = scene_color;
