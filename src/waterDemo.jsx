@@ -1,17 +1,32 @@
 
-import { wgsl } from 'https://cdn.jsdelivr.net/npm/wgsl-preprocessor@1.0/wgsl-preprocessor.js';
 import { useEffect, useRef, useState } from 'react';
+
+
+
 
 function angleToSunDirection(angle) {
   let c = Math.cos(angle / 180 * Math.PI);
   let s = Math.sin(angle / 180 * Math.PI);
-  var dir = new Float32Array([c, s, 0.2]);
+  var dir = new Float32Array([c, s, 0.1]);
   let l = Math.sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
   dir = [dir[0] / l, dir[1] / l, dir[2] / l];
   return dir;
 }
+async function loadCombinedShaders({file1,file2}) {
+  try {
+    const [waterdemo, main] = await Promise.all([
+      fetch(`./src/shader/${file1}`).then(r => r.text()),
+      fetch(`./src/shader/${file2}`).then(r => r.text())
+    ]);
+    // 确保main内容在最后且只出现一次
+    const combinedCode =`${waterdemo}\n//# MAIN_SHADER_START\n${main}`;
+    return combinedCode
+  } catch (error) {
+    throw new Error(`Shader加载失败: ${error.message}`);
+  }
+}
 
-export default function WaterDemo({ resolutionScale, SunAngle }) {
+export default function WaterDemo({ resolutionScale, SunAngle}) {
   const canvasRef = useRef(null);
   const [error, setError] = useState(null);
   const deviceRef = useRef(null);
@@ -21,9 +36,14 @@ export default function WaterDemo({ resolutionScale, SunAngle }) {
   const animationFrameId = useRef(null);
   const vertexBufferRef = useRef(null);
   const pipelineRef = useRef(null);
+  const envTextureRef = useRef(null);
+  const stagingTextureRef = useRef(null);
+  const envSamplerRef = useRef(null);
+  const prePipelineRef = useRef(null);
   const sunAngleRef = useRef(SunAngle);
   const initializationLock = useRef(false);
   const startTimeRef = useRef(0);
+  const env = true;
 
   useEffect(() => {
     sunAngleRef.current = SunAngle;
@@ -70,15 +90,28 @@ export default function WaterDemo({ resolutionScale, SunAngle }) {
           size: 256,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
+        var shaderCode;
+        const pre_shaderCode = await loadCombinedShaders({ file1: "waterdemo.wgsl", file2: "prepra.wgsl" });
+        if(!env){
+          shaderCode = await loadCombinedShaders({ file1: "waterdemo.wgsl", file2: "main.wgsl" });
+        }
+        else{
+          shaderCode = await loadCombinedShaders({ file1: "waterdemo.wgsl", file2: "main_env.wgsl" });
+        }
 
-        const shaderCode = await import('./shader/waterdemo.wgsl?raw').then(m => m.default);
         
         const bindGroupLayout = device.createBindGroupLayout({
-          entries: [
-            { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
-            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
-            { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } }
-          ]
+            entries: env? [
+                { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+                { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
+                { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+                { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+                { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } }
+            ]:[
+                { binding:0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+                { binding:1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
+                { binding:2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } }
+            ]
         });
 
         const sampler = device.createSampler({
@@ -113,14 +146,78 @@ export default function WaterDemo({ resolutionScale, SunAngle }) {
           return texture;
         })();
 
-        bindGroupRef.current = device.createBindGroup({
-          layout: bindGroupLayout,
-          entries: [
+        if (env) {
+          // 创建半分辨率纹理
+          const envTexture = device.createTexture({
+              size: [
+                  Math.floor(canvas.width * 0.5),
+                  Math.floor(canvas.height * 0.5),
+                  1
+              ],
+              format: 'rgba8unorm', 
+              usage: GPUTextureUsage.RENDER_ATTACHMENT | 
+                    GPUTextureUsage.TEXTURE_BINDING |
+                    GPUTextureUsage.COPY_SRC
+          });
+          envTextureRef.current = envTexture;
+
+          const stagingTexture = device.createTexture({
+              size: [
+                  Math.floor(canvas.width * 0.5),
+                  Math.floor(canvas.height * 0.5),
+                  1
+              ],
+              format: 'rgba8unorm', 
+              usage: GPUTextureUsage.COPY_DST | 
+                    GPUTextureUsage.TEXTURE_BINDING
+          });
+          stagingTextureRef.current = stagingTexture;
+
+          envSamplerRef.current = device.createSampler({
+            magFilter: 'linear',
+            minFilter: 'linear'
+          });
+
+          if (!stagingTextureRef.current || !envSamplerRef.current) {
+            throw new Error('环境纹理或采样器未初始化');
+          }
+
+        }
+        const entries = [
             { binding: 0, resource: { buffer: uniformBufferRef.current } },
             { binding: 1, resource: scatteringTexture.createView() },
             { binding: 2, resource: sampler }
-          ]
-        });
+        ];
+        if (env) {
+            entries.push(
+                { binding: 3, resource: stagingTextureRef.current.createView() },
+                { binding: 4, resource: envSamplerRef.current }
+            );
+        }
+        bindGroupRef.current = device.createBindGroup({ layout: bindGroupLayout, entries });
+
+        if (env) {
+          prePipelineRef.current = await device.createRenderPipelineAsync({
+              layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+              vertex: {
+                  module: device.createShaderModule({ code: pre_shaderCode }),
+                  entryPoint: 'vertex_main', // 预处理着色器的入口点
+                  buffers: [{
+                  arrayStride: 6 * 4,
+                  attributes: [
+                    { shaderLocation: 0, offset: 0, format: 'float32x2' },
+                    { shaderLocation: 1, offset: 2 * 4, format: 'float32x4' }
+                  ]
+                }]
+              },
+              fragment: {
+                  module: device.createShaderModule({ code: pre_shaderCode }),
+                  entryPoint: 'fragment_main', // 预处理着色器的入口点
+                  targets: [{ format: 'rgba8unorm' }] // 匹配预处理纹理格式
+              },
+              primitive: { topology: 'triangle-strip' }
+          });
+      }
 
         pipelineRef.current = await device.createRenderPipelineAsync({
           layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
@@ -166,6 +263,14 @@ export default function WaterDemo({ resolutionScale, SunAngle }) {
     if (animationFrameId.current) {
       cancelAnimationFrame(animationFrameId.current);
     }
+    if (envTextureRef.current) {
+    envTextureRef.current.destroy();
+    envTextureRef.current = null;
+    }
+    if (envSamplerRef.current) {
+        // 注意：Sampler 没有 destroy 方法，只需置null
+        envSamplerRef.current = null;
+    }
   };
 }, [resolutionScale]);
 
@@ -177,7 +282,7 @@ export default function WaterDemo({ resolutionScale, SunAngle }) {
         const now = performance.now();
         const time = (now - startTimeRef.current) / 1000;
         const sun_dir = angleToSunDirection(sunAngleRef.current);
-        console.log(sun_dir);
+        //console.log(sun_dir);
 
         const uniformData = new Float32Array(32);
         const dataView = new DataView(uniformData.buffer);
@@ -191,6 +296,28 @@ export default function WaterDemo({ resolutionScale, SunAngle }) {
         device.queue.writeBuffer(uniformBufferRef.current, 0, uniformData);
 
         const encoder = device.createCommandEncoder();
+        if (env) {
+            // 执行预处理Pass
+            const prePassEncoder = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: envTextureRef.current.createView(),
+                    loadOp: 'clear',
+                    clearValue: [0,0,0,1],
+                    storeOp: 'store'
+                }]
+            });
+            prePassEncoder.setPipeline(prePipelineRef.current);
+            prePassEncoder.setVertexBuffer(0, vertexBufferRef.current);
+            prePassEncoder.setBindGroup(0, bindGroupRef.current);
+            prePassEncoder.draw(4);
+            prePassEncoder.end();
+
+            encoder.copyTextureToTexture(
+            { texture: envTextureRef.current },
+            { texture: stagingTextureRef.current }, // 需要创建中间过渡纹理
+            [envTextureRef.current.width, envTextureRef.current.height]
+    );
+        }
         const pass = encoder.beginRenderPass({
           colorAttachments: [{
             view: contextRef.current.getCurrentTexture().createView(),

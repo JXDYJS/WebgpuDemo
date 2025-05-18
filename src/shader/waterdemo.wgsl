@@ -6,9 +6,6 @@ https://zhuanlan.zhihu.com/p/477489052
 https://www.gdcvault.com/play/1024478/PBR-Diffuse-Lighting-for-GGX
 */
 
-
-
-
 struct Uniforms {
     iTime: f32,
     @align(8) iResolution: vec2<f32>,
@@ -18,6 +15,8 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var atmosphere_scattering_lut: texture_3d<f32>;
 @group(0) @binding(2) var atmosphere_scattering_sampler: sampler;
+@group(0) @binding(3) var env_texture: texture_2d<f32>;
+@group(0) @binding(4) var env_sampler: sampler;
 
 
 //大气部分函数
@@ -32,6 +31,7 @@ const MOON_B: f32 = 1.0;
 const PI: f32 = 3.141592;
 const TAU: f32 = 6.283185307179586;
 const HALF_PI: f32 = PI / 2.0;
+const RCP_PI: f32 = 0.3183098861837907;
 const EPSILON: f32 = 1e-3;
 const DEGREE: f32 = PI / 180.0;
 const TX:f32 = 500.0;
@@ -328,6 +328,70 @@ fn atmosphere_scattering(
     return  atmosphere;
 }
 
+fn project_sky(direction: vec3<f32>) -> vec2<f32> {
+    var projected_dir: vec2<f32> = normalize(direction.xz);
+    
+
+    let azimuth_angle: f32 = PI + atan2(projected_dir.x, -projected_dir.y);
+
+    let altitude_angle: f32 = HALF_PI -  fast_acos(clamp(direction.y, -1.0, 1.0));
+    
+    // 计算基础坐标
+    var coord: vec2<f32>;
+    coord.x = azimuth_angle * (1.0 / TAU);
+    let signed_alt: f32 = sign(altitude_angle);
+    coord.y = 0.5 + 0.5 * signed_alt * sqrt(2.0 * RCP_PI * abs(altitude_angle));
+    
+    // 从Uniform获取分辨率
+    let sky_map_pixel_size: vec2<f32> = 1.0 / uniforms.iResolution;
+    
+    // 边缘填充计算
+    let pad_amount: f32 = 2.0;
+    let mul: f32 = 1.0 - 2.0 * pad_amount * sky_map_pixel_size.x;
+    let add: f32 = pad_amount * sky_map_pixel_size.x;
+    coord.x = coord.x * mul + add;
+    
+    return coord;
+}
+
+fn unproject_sky(coord: vec2<f32>) -> vec3<f32> {
+    
+    // 从Uniform获取分辨率
+    let sky_map_pixel_size: vec2<f32> = 1.0 / uniforms.iResolution;
+    let pad_amount: f32 = 2.0;
+    
+    // 反向填充计算
+    let inverse_mul: f32 = 1.0 / (1.0 - 2.0 * pad_amount * sky_map_pixel_size.x);
+    let inverse_add: f32 = -pad_amount * sky_map_pixel_size.x * inverse_mul;
+    let unpacked_x: f32 = coord.x * inverse_mul + inverse_add;
+    
+    // 保证坐标在[0,1)范围内
+    var new_coord: vec2<f32> = vec2(fract(unpacked_x), coord.y);
+    
+    // 高度角非线性映射
+    new_coord.y = select(
+        -pow(1.0 - 2.0 * new_coord.y, 2.0),
+        pow(2.0 * new_coord.y - 1.0, 2.0),
+        new_coord.y >= 0.5
+    );
+    
+    // 角度重建
+    let azimuth_angle = new_coord.x * TAU - PI;
+    let altitude_angle = new_coord.y * HALF_PI;
+    
+    // 三维坐标重建
+    let altitude_cos = cos(altitude_angle);
+    let altitude_sin = sin(altitude_angle);
+    let azimuth_cos = cos(azimuth_angle);
+    let azimuth_sin = sin(azimuth_angle);
+    
+    return vec3<f32>(
+        altitude_cos * azimuth_sin,
+        altitude_sin,
+        -altitude_cos * azimuth_cos
+    );
+}
+
 fn get_ambient_color(sun_color: vec3<f32>, moon_color: vec3<f32>) -> vec3<f32> {
     var sky_dir = normalize(vec3(0.0, 1.0, -0.8));
     var sky_color = atmosphere_scattering(sky_dir, sun_color, uniforms.sun_dir, moon_color, moon_dir);
@@ -602,32 +666,6 @@ fn sample_ggx_vndf(viewer_dir: vec3<f32>, alpha: vec2<f32>, hash: vec2<f32>) -> 
 }
 
 //PBR
-
-
-//VERTEX
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) sun_color:vec3<f32>,
-    @location(3) moon_color:vec3<f32>,
-    @location(4) ambient:vec3<f32>
-};
-
-@vertex
-fn vertex_main(@location(0) position: vec2<f32>,@location(1) color:vec4<f32>) -> VertexOutput{
-    var output: VertexOutput;
-    output.position = vec4<f32>(position * 2.0 - 1.0,0.0,1.0);
-    output.uv = vec2<f32>(position.x,position.y);
-    output.color = color;
-    output.sun_color = get_sun_exposure() * get_sun_tint();
-    output.moon_color = get_moon_exposure() * get_moon_tint();
-    output.ambient = vec3(0.15,0.2,0.1);
-    return output;
-}
-
-//VERTEX
 
 //FRAGMENT
 const NUM_STEPS: i32 = 8;
@@ -959,76 +997,31 @@ fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>
 }
 
 const ball_material:Material = Material(vec3(1.0,0.0,0.0),vec3(0.1),0.8,0.0);
-const env_sample_size:f32 = 128;
+const env_sample_size:f32 = 48;
+
+fn sample_env_texture(dir:vec3<f32>,trash:bool) -> vec3<f32> {
+    var uv:vec2<f32>;
+    if(trash){
+        uv = vec2<f32>(0.0,0.0);
+    }
+    else{
+        uv = project_sky(dir);
+    }
+    uv.y = 1 - uv.y;
+    return textureSample(env_texture,env_sampler,uv).rgb;
+}
 
 fn get_env_color(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) ->vec3<f32> {
     var env_color = vec3<f32>(0.0);
     let tbn = get_tbn(n);
     for(var i:f32 = 0; i < env_sample_size; i+=1){
         let hash_uv = vec2<f32>(hash(vec2(i / env_sample_size) + vec2(0.62,0.32)),hash(vec2(i / env_sample_size) + vec2(0.32,0.62)));
-        let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(ball_material.roughness),hash_uv);
+        let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(1.0),hash_uv);
         let rl = reflect(v,microfacet_normal);
         let t = (trash || dot(rl,n) < 0.01);
-        let color = get_color(p,rl,sun_color,moon_color,t);
+        let color = sample_env_texture(rl,t);
         env_color += color;
     }
     env_color /= env_sample_size;
     return env_color;
 }
-
-fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
-    let dir = calculate_dir(uv);
-    let res = is_hit_ball(POS(),dir);
-    var r:vec3<f32>;
-    var p:vec3<f32>;
-    var nor:vec3<f32>;
-    var size :i32;
-    var trash:bool;
-    if(res.hit_type == 2u){
-        nor = normalize(res.position - get_ball_pos());
-        r = reflect(dir,nor);
-        p = res.position;
-        trash = false;
-    }
-    else{
-        r = dir;
-        p = POS();
-        trash = true;
-    }
-    let scene_color = get_color(p,r,sun_color,moon_color,false);
-    let env_color = get_env_color(p,nor,dir,sun_color,moon_color,trash);
-
-    var color:vec3<f32>;
-    if(res.hit_type == 2u){
-        let base_color = ball_material.albedo;
-        let F0 = ball_material.f0.x;
-        let roughness = ball_material.roughness;
-        let metallic = ball_material.metallic;
-
-        let pbr_res = pbr_shading(base_color,roughness,F0,metallic,nor,uniforms.sun_dir,-dir,normalize(-dir + uniforms.sun_dir));
-        let scene_pbr_res = pbr_shading(base_color,roughness,F0,metallic,nor,r,-dir,normalize(-dir + r));
-        let n = dot(nor,uniforms.sun_dir) * 0.5 + 0.5;
-        let H = normalize(r - dir);
-        let VoH = max(dot(-dir, H), 0.0);
-        let t = dot(-dir,nor);
-        color = pbr_res.diffuse * sun_color * 0.15 + pbr_res.specular * sun_color +  scene_pbr_res.specular * scene_color * smoothstep(0.02,0.3,t);
-        let ambient = sun_color * (n + 0.5) * 0.3 * base_color;
-        color += ambient * 0.05;
-        let env_res = pbr_env(base_color,roughness,F0,metallic,nor,r,-dir,normalize(-dir + r));
-        //let env_color = get_env_color(p,nor,dir);
-        color = ACESToneMapping(env_color,0.5);
-    }
-    else{
-        color = scene_color;
-    }
-    return color;
-}
-
-
-@fragment
-fn fragment_main(@location(0) uv: vec2<f32>,@location(1) color: vec4<f32>,@location(2) sun_color:vec3<f32>,@location(3) moon_color:vec3<f32>,@location(4) ambient:vec3<f32>) -> @location(0) vec4<f32> {
-    return vec4<f32>(pow(get_pixel(uv,sun_color,moon_color,ambient),vec3<f32>(0.65)),1.0);
-
-}
-
-//FRAGMENT
