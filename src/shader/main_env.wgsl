@@ -1,3 +1,7 @@
+fn max30(a: vec3<f32>)->vec3<f32>{
+    return vec3<f32>(max(a.x,0.0),max(a.y,0.0),max(a.z,0.0));
+}
+
 fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
     let dir = calculate_dir(uv);
     let res = is_hit_ball(POS(),dir);
@@ -33,11 +37,11 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
         let H = normalize(r - dir);
         let VoH = max(dot(-dir, H), 0.0);
         let t = dot(-dir,nor);
-        color = pbr_res.diffuse * sun_color * 0.15 + pbr_res.specular * sun_color +  scene_pbr_res.specular * scene_color * smoothstep(0.02,0.3,t);
+        color = pbr_res.diffuse * sun_color * 0.15 + pbr_res.specular * sun_color;
         let ambient = sun_color * (n + 0.5) * 0.3 * base_color;
         color += ambient * 0.05;
-        let env_res = pbr_env(base_color,roughness,F0,metallic,nor,r,-dir,normalize(-dir + r));
-        color = ACESToneMapping(mix(scene_color,env_color,roughness) * (1.0 - roughness) + color,0.5);
+        let env_res = pbr_env(base_color,roughness,ball_material.f0,metallic,nor,r,-dir,normalize(-dir + r));
+        color = ACESToneMapping(mix(scene_color * env_res,env_color,roughness) * (1.0 - roughness) + color,0.5);
     }
     else{
         color = scene_color;

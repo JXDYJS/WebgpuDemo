@@ -918,7 +918,7 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
 fn pbr_env(    
     albedo: vec3<f32>,
     roughness: f32,
-    f0:f32,
+    f0:vec3<f32>,
     metallic: f32,
     N: vec3<f32>,
     L: vec3<f32>,
@@ -937,7 +937,7 @@ fn pbr_env(
         //let D = distribution_ggx(NoH, alpha_sq);
         let v1 = visibility_smith_ggx_single(NoV, alpha_sq);
         let v2 = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
-        let F = fresnel_dielectric(NoV,f0_to_ior(f0));
+        let F = vec3(fresnel_dielectric(NoV,f0_to_ior(f0.x)), fresnel_dielectric(NoV,f0_to_ior(f0.y)), fresnel_dielectric(NoV,f0_to_ior(f0.z)));
         cout += F * (2.0 * NoL * v2 / v1);
     }
     return cout;
@@ -996,7 +996,7 @@ fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>
     return mix(sky_color,sea_color,alp);
 }
 
-const ball_material:Material = Material(vec3(1.0,0.0,0.0),vec3(0.1),0.8,0.0);
+const ball_material:Material = Material(vec3(1.0,0.0,0.0),vec3(1.0,0.0,0.0),0.1,1.0);
 const env_sample_size:f32 = 48;
 
 fn sample_env_texture(dir:vec3<f32>,trash:bool) -> vec3<f32> {
@@ -1014,13 +1014,19 @@ fn sample_env_texture(dir:vec3<f32>,trash:bool) -> vec3<f32> {
 fn get_env_color(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) ->vec3<f32> {
     var env_color = vec3<f32>(0.0);
     let tbn = get_tbn(n);
+    let base_color = ball_material.albedo;
+    let f0 =ball_material.f0;
+    let roughness = ball_material.roughness;
+    let metallic = ball_material.metallic;
     for(var i:f32 = 0; i < env_sample_size; i+=1){
         let hash_uv = vec2<f32>(hash(vec2(i / env_sample_size) + vec2(0.62,0.32)),hash(vec2(i / env_sample_size) + vec2(0.32,0.62)));
         let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(1.0),hash_uv);
         let rl = reflect(v,microfacet_normal);
+        let h = normalize(-v + rl);
+        let pbr_env_res = pbr_env(base_color,roughness,f0,metallic,microfacet_normal,rl,-v,h);
         let t = (trash || dot(rl,n) < 0.01);
         let color = sample_env_texture(rl,t);
-        env_color += color;
+        env_color += color * pbr_env_res;
     }
     env_color /= env_sample_size;
     return env_color;
