@@ -937,7 +937,13 @@ fn pbr_env(
         //let D = distribution_ggx(NoH, alpha_sq);
         let v1 = visibility_smith_ggx_single(NoV, alpha_sq);
         let v2 = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
-        let F = vec3(fresnel_dielectric(NoV,f0_to_ior(f0.x)), fresnel_dielectric(NoV,f0_to_ior(f0.y)), fresnel_dielectric(NoV,f0_to_ior(f0.z)));
+        var F: vec3<f32>;
+        if(metallic > 0.1){
+            F = fresnel_schlick(NoL, mix(vec3<f32>(0.02), albedo, metallic))
+        }
+        else{
+            F = vec3(fresnel_dielectric(NoL,f0_to_ior(f0.x)));
+        }
         cout += F * (2.0 * NoL * v2 / v1);
     }
     return cout;
