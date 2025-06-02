@@ -1,7 +1,7 @@
 fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
     let dir = unproject_sky(uv);
     let pos = get_ball_pos();
-    let color = get_color(pos,dir,sun_color,moon_color,false);
+    let color = get_color_without_sun(pos,dir,sun_color,moon_color,false);
     return color;
 }
 

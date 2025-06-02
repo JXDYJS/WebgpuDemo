@@ -10,13 +10,23 @@ struct Uniforms {
     iTime: f32,
     @align(8) iResolution: vec2<f32>,
     @align(16) sun_dir: vec3<f32>,
+    @align(32) ball_data:vec2<f32>,
     
 };
+
+struct Pos_data{
+    ball_pos:vec3<f32>,
+    camera_pos:vec3<f32>,
+    light_pos:vec3<f32>,
+};
+
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var atmosphere_scattering_lut: texture_3d<f32>;
 @group(0) @binding(2) var atmosphere_scattering_sampler: sampler;
 @group(0) @binding(3) var env_texture: texture_2d<f32>;
 @group(0) @binding(4) var env_sampler: sampler;
+@group(0) @binding(5) var env_last_frame: texture_2d<f32>;
+@group(0) @binding(6) var env_last_frame_sampler: sampler;
 
 
 //大气部分函数
@@ -103,6 +113,10 @@ fn sqr(a:f32)->f32{
 
 fn pow5(x: f32) -> f32 {
     return x * x * x * x * x;
+}
+
+fn max30(a: vec3<f32>)->vec3<f32>{
+    return vec3<f32>(max(a.x,0.0),max(a.y,0.0),max(a.z,0.0));
 }
 
 fn fast_acos(x:f32) -> f32 {
@@ -858,9 +872,18 @@ fn getNormal(p:vec3<f32>,eps:f32) -> vec3<f32> {
 
 const ball_pos : vec3<f32> = vec3<f32>(0.0, 6.0, -10.0);
 const ball_radius : f32 = 1.0;
+const light_dist : f32 = 2.0;
+const light_speed : f32 = 5.0;
+const light_strength : f32 = 1.0;
 
 fn get_ball_pos() -> vec3<f32> {
     return ball_pos * fromEuler(ANGLE());
+}
+
+fn get_light_data(ball_pos: vec3<f32>) -> mat2x3<f32> {
+    let dir = vec3(cos(uniforms.iTime * 0.1 * light_speed),sin(uniforms.iTime * 0.16 * light_speed),sin(uniforms.iTime * 0.1 * light_speed));
+    let color = abs(normalize(dir)) * 3.0 * light_strength;
+    return mat2x3<f32>(dir * light_dist + ball_pos, color);
 }
 
 struct TracingResult {
@@ -938,8 +961,8 @@ fn pbr_env(
         let v1 = visibility_smith_ggx_single(NoV, alpha_sq);
         let v2 = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
         var F: vec3<f32>;
-        if(metallic > 0.1){
-            F = fresnel_schlick(NoL, mix(vec3<f32>(0.02), albedo, metallic))
+        if(metallic > 0.001){
+            F = fresnel_schlick(NoL,f0);
         }
         else{
             F = vec3(fresnel_dielectric(NoL,f0_to_ior(f0.x)));
@@ -963,9 +986,9 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
 
 //const pos:vec3<f32> = vec3<f32>(3.0,3.0,3.0);
 
-fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) -> vec3<f32>{
+fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool,should_draw_sun:bool) -> vec3<f32>{
     var sky_color = atmosphere_scattering(dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
-    sky_color += draw_sun(dir,sun_color);
+    sky_color += draw_sun(dir,sun_color) * select(0.0,1.0,should_draw_sun);
     sky_color = ACESToneMapping(sky_color,0.5);
 
     var res :TracingResult;
@@ -1002,37 +1025,103 @@ fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>
     return mix(sky_color,sea_color,alp);
 }
 
-const ball_material:Material = Material(vec3(1.0,0.0,0.0),vec3(1.0,0.0,0.0),0.1,1.0);
-const env_sample_size:f32 = 48;
+fn get_color_without_sun(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) -> vec3<f32>{
+    var sky_color = atmosphere_scattering(dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    sky_color = ACESToneMapping(sky_color,0.5);
 
-fn sample_env_texture(dir:vec3<f32>,trash:bool) -> vec3<f32> {
-    var uv:vec2<f32>;
+    var res :TracingResult;
+    var dist :vec3<f32>;
+    var n : vec3<f32>;
+
     if(trash){
-        uv = vec2<f32>(0.0,0.0);
+        //因为要求流平衡，必须要在一些没必要采样颜色的时候采样颜色，故写成这样加速
+        res = TracingResult(0.0,vec3<f32>(0.0,0.0,0.0),0u);
+        dist = vec3<f32>(1.0);
+        n = vec3<f32>(0.0);
     }
     else{
+        res = heightMapTracing(p, dir);
+        dist = res.position - p;
+        n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
+    }
+    var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color);
+    let alp = 1 - smoothstep(-0.02,0.0,dir.y);
+
+    let horizon_dir = normalize(vec3(dir.xz,min(dir.y,-0.1)).xzy);
+    let horizon_color = atmosphere_scattering(horizon_dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+
+    if(trash){
+        return vec3(0.0);
+    }
+
+    let horizon_fac = linear_step(0.1,1.0,exp(-75 * sqr(uniforms.sun_dir.y + 0.0496)));
+    let fog_color = mix(sky_color,horizon_color,sqr(horizon_fac));
+    let fog = border_fog(dist,dir);
+    
+    sea_color = mix(fog_color,sea_color,fog);
+    sky_color = mix(fog_color,sky_color,fog);
+    return mix(sky_color,sea_color,alp);
+}
+
+const ball_material:Material = Material(vec3(0.8,0.5,0.5),vec3(0.04),0.1,0.0);
+const env_sample_size:f32 = 32;
+
+fn get_ball_material() -> Material{
+    var ball:Material = ball_material; //将来修改
+    ball.metallic = uniforms.ball_data[1];
+    ball.roughness = uniforms.ball_data[0];
+    ball.f0 = mix(vec3(0.04),ball.albedo,ball.metallic);
+    return ball;
+}
+const KERNEL_5: array<f32, 5> = array<f32, 5>(
+    0.0625, 
+    0.25, 
+    0.375, 
+    0.25, 
+    0.0625 
+);
+
+fn fast_gaussian_5x5(uv: vec2<f32>) -> vec3<f32> {
+    let texture_size = textureDimensions(env_texture);
+    let inv_size = 1.0 / vec2<f32>(texture_size);
+    var result = vec3<f32>(0.0);
+
+    for (var i: i32 = -2; i <= 2; i++) {
+        let offset = vec2<f32>(f32(i), 0.0) * inv_size;
+        result += textureSample(env_texture, env_sampler, uv + offset).rgb * KERNEL_5[i + 2];
+    }
+    return result;
+}
+
+fn sample_env_texture(dir: vec3<f32>, trash: bool) -> vec3<f32> {
+    var uv: vec2<f32>;
+    if (trash) {
+        uv = vec2<f32>(0.0, 0.0);
+    } else {
         uv = project_sky(dir);
     }
-    uv.y = 1 - uv.y;
-    return textureSample(env_texture,env_sampler,uv).rgb;
+    uv.y = 1.0 - uv.y;
+    
+    return fast_gaussian_5x5(uv);
 }
 
 fn get_env_color(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) ->vec3<f32> {
+    let ball = get_ball_material();
     var env_color = vec3<f32>(0.0);
     let tbn = get_tbn(n);
-    let base_color = ball_material.albedo;
-    let f0 =ball_material.f0;
-    let roughness = ball_material.roughness;
-    let metallic = ball_material.metallic;
+    let base_color = ball.albedo;
+    let f0 =ball.f0;
+    let roughness = ball.roughness;
+    let metallic = ball.metallic;
     for(var i:f32 = 0; i < env_sample_size; i+=1){
         let hash_uv = vec2<f32>(hash(vec2(i / env_sample_size) + vec2(0.62,0.32)),hash(vec2(i / env_sample_size) + vec2(0.32,0.62)));
-        let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(1.0),hash_uv);
+        let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(0.5),hash_uv);
         let rl = reflect(v,microfacet_normal);
         let h = normalize(-v + rl);
-        let pbr_env_res = pbr_env(base_color,roughness,f0,metallic,microfacet_normal,rl,-v,h);
-        let t = (trash || dot(rl,n) < 0.01);
+        let pbr_env_res = pbr_env(base_color,roughness,f0,metallic,n,rl,-v,h);
+        let t = (trash || dot(rl,n) < 0.001);
         let color = sample_env_texture(rl,t);
-        env_color += color * pbr_env_res;
+        env_color += pbr_env_res * color;
     }
     env_color /= env_sample_size;
     return env_color;

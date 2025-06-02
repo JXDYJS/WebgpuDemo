@@ -37,12 +37,15 @@ import WaterDemo from './waterDemo'
 function App() {
   const [resolutionScale, setResolutionScale] = useState(0.8);
   const [sunAngle, setSunAngle] = useState(45);
+  const [roughness, setRoughness] = useState(0.25);
+  const [metallic, setMetallic] = useState(0);
 
   return (
     <div>
-      <WaterDemo resolutionScale={resolutionScale} SunAngle={sunAngle} />
+      <WaterDemo resolutionScale={resolutionScale} SunAngle={sunAngle} roughness={roughness} metallic={metallic}/>
       <WaterDemoControl 
         onResolutionChange={(scale) => setResolutionScale(scale)} onSunAngleChange={(angle) => setSunAngle(angle)}
+        onRoughnessChange={(roughness) => setRoughness(roughness)} onMetallicChange={(metallic) => setMetallic(metallic)}
       />
     </div>
   );

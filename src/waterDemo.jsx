@@ -26,7 +26,7 @@ async function loadCombinedShaders({file1,file2}) {
   }
 }
 
-export default function WaterDemo({ resolutionScale, SunAngle}) {
+export default function WaterDemo({ resolutionScale, SunAngle,roughness,metallic}) {
   const canvasRef = useRef(null);
   const [error, setError] = useState(null);
   const deviceRef = useRef(null);
@@ -41,13 +41,17 @@ export default function WaterDemo({ resolutionScale, SunAngle}) {
   const envSamplerRef = useRef(null);
   const prePipelineRef = useRef(null);
   const sunAngleRef = useRef(SunAngle);
+  const roughnessRef = useRef(roughness);
+  const metallicRef = useRef(metallic);
   const initializationLock = useRef(false);
   const startTimeRef = useRef(0);
   const env = true;
 
   useEffect(() => {
     sunAngleRef.current = SunAngle;
-  }, [SunAngle]);
+    roughnessRef.current = roughness;
+    metallicRef.current = metallic;
+  }, [SunAngle, roughness, metallic]);
 
   useEffect(() => {
     if (initializationLock.current) return;
@@ -281,10 +285,12 @@ export default function WaterDemo({ resolutionScale, SunAngle}) {
       try {
         const now = performance.now();
         const time = (now - startTimeRef.current) / 1000;
+        const Roughness = roughnessRef.current;
+        const Metallic = metallicRef.current;
         const sun_dir = angleToSunDirection(sunAngleRef.current);
-        //console.log(sun_dir);
+        console.log(Roughness);
 
-        const uniformData = new Float32Array(32);
+        const uniformData = new Float32Array(64);
         const dataView = new DataView(uniformData.buffer);
         dataView.setFloat32(0, time, true);
         dataView.setFloat32(8, canvasRef.current.width, true);
@@ -292,6 +298,9 @@ export default function WaterDemo({ resolutionScale, SunAngle}) {
         dataView.setFloat32(16, sun_dir[0], true);
         dataView.setFloat32(20, sun_dir[1], true);
         dataView.setFloat32(24, sun_dir[2], true);
+        dataView.setFloat32(32, Roughness, true);
+        dataView.setFloat32(36, Metallic, true);
+
 
         device.queue.writeBuffer(uniformBufferRef.current, 0, uniformData);
 
