@@ -1,0 +1,1128 @@
+/*
+参考的代码和资料
+https://www.shadertoy.com/view/Ms2SD1
+https://zhuanlan.zhihu.com/p/127026136
+https://zhuanlan.zhihu.com/p/477489052
+https://www.gdcvault.com/play/1024478/PBR-Diffuse-Lighting-for-GGX
+*/
+
+struct Uniforms {
+    iTime: f32,
+    @align(8) iResolution: vec2<f32>,
+    @align(16) sun_dir: vec3<f32>,
+    @align(32) ball_data:vec2<f32>,
+    
+};
+
+struct Pos_data{
+    ball_pos:vec3<f32>,
+    camera_pos:vec3<f32>,
+    light_pos:vec3<f32>,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var atmosphere_scattering_lut: texture_3d<f32>;
+@group(0) @binding(2) var atmosphere_scattering_sampler: sampler;
+@group(0) @binding(3) var env_texture: texture_2d<f32>;
+@group(0) @binding(4) var env_sampler: sampler;
+@group(0) @binding(5) var env_last_frame: texture_2d<f32>;
+@group(0) @binding(6) var env_last_frame_sampler: sampler;
+
+
+//大气部分函数
+const sun_dir = normalize(vec3<f32>(1.0, 0.2,0.0));
+//const sun_dir = normalize(uniforms.sun_dir);
+const moon_dir = normalize(vec3<f32>(0.0, -0.3,1.0));//目前不考虑夜晚，所以这行没用
+const SUN_I: f32 = 1.0;
+const MOON_I: f32 = 1.0;
+const MOON_R: f32 = 0.75;
+const MOON_G: f32 = 0.83;
+const MOON_B: f32 = 1.0;
+const PI: f32 = 3.141592;
+const TAU: f32 = 6.283185307179586;
+const HALF_PI: f32 = PI / 2.0;
+const RCP_PI: f32 = 0.3183098861837907;
+const EPSILON: f32 = 1e-3;
+const DEGREE: f32 = PI / 180.0;
+const TX:f32 = 500.0;
+
+fn FADE()-> f32{
+    if(uniforms.sun_dir.y < 0.18){
+        return 0.37 + 1.2 * max(0.0, -uniforms.sun_dir.y);
+    }
+    return 0.17;
+}
+
+fn SUN_WEIGHT()-> f32{
+    return pow(clamp(1.0 - FADE() * abs(uniforms.sun_dir.y - 0.18) ,0.0,1.0),2.0);
+}
+
+fn SUN_RAISE()-> f32{
+    return step(0.0001,uniforms.sun_dir.x) * SUN_WEIGHT();
+}
+
+fn SUN_SET()-> f32{
+    return step(0.0001,-uniforms.sun_dir.x) * SUN_WEIGHT();
+}
+
+// 天体参数
+const SUN_ANGULAR_RADIUS: f32 = 0.275 * DEGREE;
+const MOON_ANGULAR_RADIUS: f32 = 0.278 * DEGREE;
+const SUNLIGHT_COLOR: vec3<f32> = vec3(1.051, 0.985, 0.940);
+const MOONLIGHT_COLOR: vec3<f32> = vec3(0.05, 0.1, 0.15);
+
+// 大气参数
+const PLANET_RADIUS: f32 = 6371e3;
+const ATMOSPHERE_INNER_RADIUS: f32 = PLANET_RADIUS - 1e3;
+const ATMOSPHERE_OUTER_RADIUS: f32 = PLANET_RADIUS + 110e3;
+const ATMOSPHERE_THICKNESS: f32 = ATMOSPHERE_OUTER_RADIUS - ATMOSPHERE_INNER_RADIUS;
+
+// LUT参数
+const SCATTERING_RES: vec3<f32> = vec3(16.0, 64.0, 32.0);
+const MIN_MU_S: f32 = -0.35;
+
+fn linear_step(edge0: f32, edge1: f32, x: f32) -> f32 {
+    return clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+}
+
+fn pulse(a: f32, b: f32, x: f32) -> f32 {
+    return step(a, x) - step(b, x);
+}
+
+fn from_srgb(srgb: vec3<f32>) -> vec3<f32> {
+    let linear = select(
+        srgb / 12.92,
+        pow((srgb + 0.055) / 1.055, vec3<f32>(2.4)),
+        srgb > vec3(0.04045)
+    );
+    return linear;
+}
+
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    let t = clamp((x - low) / (high - low), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+fn cube(a: f32) -> f32 {
+    return a * a * a;
+}
+
+fn sqr(a:f32)->f32{
+    return a * a;
+}
+
+fn pow5(x: f32) -> f32 {
+    return x * x * x * x * x;
+}
+
+fn max30(a: vec3<f32>)->vec3<f32>{
+    return vec3<f32>(max(a.x,0.0),max(a.y,0.0),max(a.z,0.0));
+}
+
+fn fast_acos(x:f32) -> f32 {
+	let C0 = 1.57018;
+	let C1 = -0.201877;
+	let C2 = 0.0464619;
+
+	var res = (C2 * abs(x) + C1) * abs(x) + C0; // p(x)
+	res *= sqrt(1.0 - abs(x));
+
+	if(x>=0.0){
+		return res;
+    }
+    else{
+        return PI - res;
+    }
+}
+
+fn cubic_length(v:vec2<f32>)->f32 {
+	return pow(cube(abs(v.x)) + cube(abs(v.y)), 0.333333);
+}
+
+fn dampen(x:f32)->f32{
+	let t = clamp(x,0.0,1.0);
+	return t * (2.0 - t);
+}
+
+fn ACESToneMapping(color: vec3<f32>, adapted_lum: f32) -> vec3<f32> {
+    const A: f32 = 2.51;
+    const B: f32 = 0.03;
+    const C: f32 = 2.43;
+    const D: f32 = 0.59;
+    const E: f32 = 0.14;
+
+    let scaled_color = color * adapted_lum;
+    return (scaled_color * (A * scaled_color + B)) / 
+           (scaled_color * (C * scaled_color + D) + E);
+}
+
+fn get_uv_from_unit_range(val: f32, resolution: f32) -> f32 {
+    return clamp(0.5 / resolution + val * (1.0 - 1.0 / resolution), 0.0, 1.0);
+}
+
+fn intersect_sphere(mu: f32, radius: f32, outer_radius: f32) -> vec2<f32> {
+    let discriminant = radius * radius * (mu * mu - 1.0) + outer_radius * outer_radius;
+    let sqrt_d = sqrt(max(discriminant, 0.0));
+    return vec2(-radius * mu - sqrt_d, -radius * mu + sqrt_d);
+}
+
+fn atmosphere_mie_phase(nu: f32) -> f32 {
+    const G: f32 = 0.76;
+    let gg = G * G;
+    return (3.0 * (1.0 - gg)) / (8.0 * PI * (2.0 + gg)) * (1.0 + nu * nu) / pow(1.0 + gg - 2.0 * G * nu, 1.5);
+}
+
+fn get_sun_exposure() -> f32 {
+    let time_sunset = SUN_SET();
+    let time_sunrise = SUN_RAISE();
+    let base_scale = 7.0 * SUN_I;
+    
+    // 蓝调时刻计算
+    let blue_hour = linear_step(
+        0.05, 
+        1.0, 
+        exp(-190.0 * pow(uniforms.sun_dir.y + 0.09604, 2.0))
+    );
+    
+    let daytime_mul = 1.0 + 0.5 * (time_sunset + time_sunrise) + 40.0 * blue_hour;
+    
+    return base_scale * daytime_mul;
+}
+
+fn get_sun_tint() -> vec3<f32> {
+    let time_sunset = SUN_SET();
+    let time_sunrise = SUN_RAISE();
+    // 蓝调时刻系数
+    let blue_hour = linear_step(
+        0.05, 
+        1.0, 
+        exp(-190.0 * pow(uniforms.sun_dir.y + 0.09604, 2.0))
+    );
+    
+    // 早晚色调
+    var morning_evening_tint = vec3<f32>(1.05, 0.84, 0.93) * 1.2;
+    morning_evening_tint = mix(
+        vec3<f32>(1.0), 
+        morning_evening_tint, 
+        pow(pulse(0.17, 0.40, uniforms.sun_dir.y), 2.0)
+    );
+    
+    // 蓝调时刻色调
+    var blue_hour_tint = vec3<f32>(0.95, 0.80, 1.0);
+    blue_hour_tint = mix(vec3<f32>(1.0), blue_hour_tint, blue_hour);
+    
+    // 自定义色调(未来可能在设置内传入)
+    let tint_morning = from_srgb(vec3<f32>(1.0, 1.0, 1.0));
+    let tint_noon    = from_srgb(vec3<f32>(1.0, 1.0, 1.0));
+    let tint_evening = from_srgb(vec3<f32>(1.0, 1.0, 1.0));
+    
+    var user_tint = mix(tint_noon, tint_morning, time_sunrise);
+    user_tint = mix(user_tint, tint_evening, time_sunset);
+    
+    return morning_evening_tint * blue_hour_tint * user_tint;
+}
+
+// 月光计算 -------------------------------------------------
+fn get_moon_exposure() -> f32 {
+    return 0.66 * MOON_I * 1.0;
+}
+
+fn get_moon_tint() -> vec3<f32> {
+    return from_srgb(vec3<f32>(MOON_R, MOON_G, MOON_B));
+}
+
+// 主散射函数 ---------------------------------------------------------------
+fn atmosphere_scattering(
+    ray_dir: vec3<f32>,
+    sun_color: vec3<f32>,
+    sun_dir: vec3<f32>,
+    moon_color: vec3<f32>,
+    moon_dir: vec3<f32>
+) -> vec3<f32> {
+    // 基础参数
+    let mu = ray_dir.y;
+    let nu_sun = dot(ray_dir, sun_dir);
+    let nu_moon = dot(ray_dir, moon_dir);
+    let mu_sun = sun_dir.y;
+    let mu_moon = moon_dir.y;
+
+    // 地平线优化
+    var adjusted_mu = mu;
+    let sun_step = smoothstep(-0.05, 0.1, mu_sun);
+    let moon_step = smoothstep(0.05, 0.1, mu_moon);
+    let horizon_mu = mix(-0.01, 0.03, clamp(sun_step + moon_step, 0.0, 1.0));
+    adjusted_mu = max(mu, horizon_mu);
+
+    // 太阳散射计算 ---------------------------------------------------------
+    // nu映射
+    let half_range_nu_sun = sqrt((1.0 - adjusted_mu * adjusted_mu) * (1.0 - mu_sun * mu_sun));
+    let nu_min_sun = adjusted_mu * mu_sun - half_range_nu_sun;
+    let nu_max_sun = adjusted_mu * mu_sun + half_range_nu_sun;
+    let u_nu_sun = select(
+        (nu_sun - nu_min_sun) / (nu_max_sun - nu_min_sun),
+        nu_min_sun,
+        nu_min_sun == nu_max_sun
+    );
+    let u_nu_sun_uv = get_uv_from_unit_range(u_nu_sun, SCATTERING_RES.x);
+
+    // mu映射
+    let r = PLANET_RADIUS;
+    let H = sqrt(ATMOSPHERE_OUTER_RADIUS * ATMOSPHERE_OUTER_RADIUS - ATMOSPHERE_INNER_RADIUS * ATMOSPHERE_INNER_RADIUS);
+    let rho = sqrt(max(r * r - ATMOSPHERE_INNER_RADIUS * ATMOSPHERE_INNER_RADIUS, 0.0));
+    let rmu = r * adjusted_mu;
+    let discriminant = rmu * rmu - r * r + ATMOSPHERE_INNER_RADIUS * ATMOSPHERE_INNER_RADIUS;
+
+    var u_mu: f32;
+    if (adjusted_mu < 0.0 && discriminant >= 0.0) {
+        let d = -rmu - sqrt(discriminant);
+        let d_min = r - ATMOSPHERE_INNER_RADIUS;
+        let d_max = rho;
+        u_mu = (d - d_min) / (d_max - d_min);
+        u_mu = get_uv_from_unit_range(u_mu, SCATTERING_RES.y / 2.0);
+        u_mu = 0.5 - 0.5 * u_mu;
+    } else {
+        let d = -rmu + sqrt(discriminant + H * H);
+        let d_min = ATMOSPHERE_OUTER_RADIUS - r;
+        let d_max = rho + H;
+        u_mu = (d - d_min) / (d_max - d_min);
+        u_mu = get_uv_from_unit_range(u_mu, SCATTERING_RES.y / 2.0);
+        u_mu = 0.5 + 0.5 * u_mu;
+    }
+
+    // mu_s映射
+    let intersect_sun = intersect_sphere(MIN_MU_S, ATMOSPHERE_INNER_RADIUS, ATMOSPHERE_OUTER_RADIUS);
+    let D_sun = intersect_sun.y;
+    let A_sun = (D_sun - ATMOSPHERE_THICKNESS) / (H - ATMOSPHERE_THICKNESS);
+    let d_sun = intersect_sphere(mu_sun, ATMOSPHERE_INNER_RADIUS, ATMOSPHERE_OUTER_RADIUS).y;
+    let a_sun = (d_sun - ATMOSPHERE_THICKNESS) / (H - ATMOSPHERE_THICKNESS);
+    let u_mu_s_sun = max(1.0 - a_sun / A_sun, 0.0) / (1.0 + a_sun);
+    let u_mu_s_sun_uv = get_uv_from_unit_range(u_mu_s_sun, SCATTERING_RES.z);
+
+    // 月光散射计算 ---------------------------------------------------------
+    // (结构相同，替换变量)
+    let half_range_nu_moon = sqrt((1.0 - adjusted_mu * adjusted_mu) * (1.0 - mu_moon * mu_moon));
+    let nu_min_moon = adjusted_mu * mu_moon - half_range_nu_moon;
+    let nu_max_moon = adjusted_mu * mu_moon + half_range_nu_moon;
+    let u_nu_moon = select(
+        (nu_moon - nu_min_moon) / (nu_max_moon - nu_min_moon),
+        nu_min_moon,
+        nu_min_moon == nu_max_moon
+    );
+    let u_nu_moon_uv = get_uv_from_unit_range(u_nu_moon, SCATTERING_RES.x);
+
+    // mu_s映射
+    let intersect_moon = intersect_sphere(MIN_MU_S, ATMOSPHERE_INNER_RADIUS, ATMOSPHERE_OUTER_RADIUS);
+    let D_moon = intersect_moon.y;
+    let A_moon = (D_moon - ATMOSPHERE_THICKNESS) / (H - ATMOSPHERE_THICKNESS);
+    let d_moon = intersect_sphere(mu_moon, ATMOSPHERE_INNER_RADIUS, ATMOSPHERE_OUTER_RADIUS).y;
+    let a_moon = (d_moon - ATMOSPHERE_THICKNESS) / (H - ATMOSPHERE_THICKNESS);
+    let u_mu_s_moon = max(1.0 - a_moon / A_moon, 0.0) / (1.0 + a_moon);
+    let u_mu_s_moon_uv = get_uv_from_unit_range(u_mu_s_moon, SCATTERING_RES.z);
+
+    //纹理采样 ------------------------------------------------------------
+    let uv_sc_sun = vec3<f32>(u_nu_sun_uv * 0.5, u_mu, u_mu_s_sun_uv);
+    let uv_sm_sun = vec3<f32>(u_nu_sun_uv * 0.5 + 0.5, u_mu, u_mu_s_sun_uv);
+    let scattering_sc_sun = textureSample(atmosphere_scattering_lut, atmosphere_scattering_sampler, uv_sc_sun).rgb;
+    let scattering_sm_sun = textureSample(atmosphere_scattering_lut, atmosphere_scattering_sampler, uv_sm_sun).rgb;
+
+    let uv_sc_moon = vec3<f32>(u_nu_moon_uv * 0.5, u_mu, u_mu_s_moon_uv);
+    let uv_sm_moon = vec3<f32>(u_nu_moon_uv * 0.5 + 0.5, u_mu, u_mu_s_moon_uv);
+    let scattering_sc_moon = textureSample(atmosphere_scattering_lut, atmosphere_scattering_sampler, uv_sc_moon).rgb;
+    let scattering_sm_moon = textureSample(atmosphere_scattering_lut, atmosphere_scattering_sampler, uv_sm_moon).rgb;
+
+    // // 相位函数计算 ---------------------------------------------------------
+    let mie_phase_sun = atmosphere_mie_phase(nu_sun);
+    let mie_phase_moon = atmosphere_mie_phase(nu_moon);
+
+    // 最终合成 ------------------------------------------------------------
+    let sun_contribution = (scattering_sc_sun + scattering_sm_sun * mie_phase_sun) * sun_color;
+    let moon_contribution = (scattering_sc_moon + scattering_sm_moon * mie_phase_moon) * moon_color;
+    var atmosphere = sun_contribution + moon_contribution;
+
+    return  atmosphere;
+}
+
+fn project_sky(direction: vec3<f32>) -> vec2<f32> {
+    var projected_dir: vec2<f32> = normalize(direction.xz);
+    
+
+    let azimuth_angle: f32 = PI + atan2(projected_dir.x, -projected_dir.y);
+
+    let altitude_angle: f32 = HALF_PI -  fast_acos(clamp(direction.y, -1.0, 1.0));
+    
+    // 计算基础坐标
+    var coord: vec2<f32>;
+    coord.x = azimuth_angle * (1.0 / TAU);
+    let signed_alt: f32 = sign(altitude_angle);
+    coord.y = 0.5 + 0.5 * signed_alt * sqrt(2.0 * RCP_PI * abs(altitude_angle));
+    
+    // 从Uniform获取分辨率
+    let sky_map_pixel_size: vec2<f32> = 1.0 / uniforms.iResolution;
+    
+    // 边缘填充计算
+    let pad_amount: f32 = 2.0;
+    let mul: f32 = 1.0 - 2.0 * pad_amount * sky_map_pixel_size.x;
+    let add: f32 = pad_amount * sky_map_pixel_size.x;
+    coord.x = coord.x * mul + add;
+    
+    return coord;
+}
+
+fn unproject_sky(coord: vec2<f32>) -> vec3<f32> {
+    
+    // 从Uniform获取分辨率
+    let sky_map_pixel_size: vec2<f32> = 1.0 / uniforms.iResolution;
+    let pad_amount: f32 = 2.0;
+    
+    // 反向填充计算
+    let inverse_mul: f32 = 1.0 / (1.0 - 2.0 * pad_amount * sky_map_pixel_size.x);
+    let inverse_add: f32 = -pad_amount * sky_map_pixel_size.x * inverse_mul;
+    let unpacked_x: f32 = coord.x * inverse_mul + inverse_add;
+    
+    // 保证坐标在[0,1)范围内
+    var new_coord: vec2<f32> = vec2(fract(unpacked_x), coord.y);
+    
+    // 高度角非线性映射
+    new_coord.y = select(
+        -pow(1.0 - 2.0 * new_coord.y, 2.0),
+        pow(2.0 * new_coord.y - 1.0, 2.0),
+        new_coord.y >= 0.5
+    );
+    
+    // 角度重建
+    let azimuth_angle = new_coord.x * TAU - PI;
+    let altitude_angle = new_coord.y * HALF_PI;
+    
+    // 三维坐标重建
+    let altitude_cos = cos(altitude_angle);
+    let altitude_sin = sin(altitude_angle);
+    let azimuth_cos = cos(azimuth_angle);
+    let azimuth_sin = sin(azimuth_angle);
+    
+    return vec3<f32>(
+        altitude_cos * azimuth_sin,
+        altitude_sin,
+        -altitude_cos * azimuth_cos
+    );
+}
+
+fn get_ambient_color(sun_color: vec3<f32>, moon_color: vec3<f32>) -> vec3<f32> {
+    var sky_dir = normalize(vec3(0.0, 1.0, -0.8));
+    var sky_color = atmosphere_scattering(sky_dir, sun_color, uniforms.sun_dir, moon_color, moon_dir);
+    sky_color = TAU * mix(sky_color,vec3(sky_color.b) * sqrt(2.0),1.0 / PI);
+    return sky_color;
+}
+
+fn border_fog(scene_pos:vec3<f32>,world_dir:vec3<f32>)->f32 {
+    var fog = cubic_length(scene_pos.xz) / TX;
+    fog = exp2(-8.0 * pow(fog,8.0));
+    fog = mix(fog, 1.0, 0.75 * dampen(linear_step(0.0, 0.2, world_dir.y)));
+    return fog;
+}
+
+// fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
+// 	let nu = dot(ray_dir, uniforms.sun_dir);
+// 	let alpha = vec3(0.429, 0.522, 0.614);
+// 	let center_to_edge = max(2 * (TAU / 360.0) - fast_acos(nu),0.0);
+// 	let limb_darkening = pow(vec3(1.0 - sqr(1.0 - center_to_edge)), 0.5 * alpha);
+
+// 	return 40.0 * sun_color * step(1e-5, center_to_edge) * limb_darkening;
+// }
+
+fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
+	let nu = dot(ray_dir, uniforms.sun_dir);
+	let alpha = vec3(0.429, 0.522, 0.614);
+	let center_to_edge = max(nu - 0.998,0.0);
+	let limb_darkening = pow(vec3(1.0 - sqr(1.0 - center_to_edge)), 0.5 * alpha);
+
+	return 40.0 * sun_color * step(1e-5, center_to_edge);
+}
+//ATOMOSPHERE
+
+//
+//PBR部分
+//
+
+struct Material{
+    albedo:vec3<f32>,
+    f0:vec3<f32>,
+    roughness:f32,
+    metallic:f32,
+};
+
+// GGX法线分布函数
+fn distribution_ggx(NoH: f32, alpha_sq: f32) -> f32 {
+    let denom = (1.0 - NoH * NoH) + NoH * NoH * alpha_sq;
+    return alpha_sq / (PI * denom * denom);
+}
+
+// Smith单方向遮挡函数
+fn visibility_smith_ggx_single(cos_theta: f32, alpha_sq: f32) -> f32 {
+    let term1 = (-cos_theta * alpha_sq + cos_theta) * cos_theta;
+    return 1.0 / (cos_theta + sqrt(term1 + alpha_sq));
+}
+
+// Smith双方向遮挡函数
+fn visibility_smith_ggx_joint(NoL: f32, NoV: f32, alpha_sq: f32) -> f32 {
+    let lambda_v = NoV * sqrt( (-NoL * alpha_sq + NoL) * NoL + alpha_sq );
+    let lambda_l = NoL * sqrt( (-NoV * alpha_sq + NoV) * NoV + alpha_sq );
+    return 1.0 / (1.0 + lambda_v + lambda_l + 1e-5); // 添加防除零保护
+}
+
+fn f0_to_ior(f0: f32) -> f32 {
+    return (1.0 + sqrt(f0)) / (1.0 - sqrt(f0));
+}
+
+// 菲涅尔近似（Schlick）
+fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
+    return f0 + (vec3<f32>(1.0) - f0) * pow5(1.0 - cos_theta);
+}
+
+// 介质菲涅尔计算
+fn fresnel_dielectric(cos_theta: f32, ior: f32) -> f32 {
+    let g_sq = sqr(ior) + sqr(cos_theta) - 1.0;
+    if (g_sq < 0.0){return 1.0;}
+    let g = sqrt(g_sq);
+    let a = (g - cos_theta) / max((g + cos_theta),EPSILON);
+    let b = (cos_theta * (g + cos_theta) - 1.0) / max((cos_theta * (g - cos_theta) + 1.0),EPSILON);
+    return 0.5 * a * a * (1.0 + b * b);
+}
+
+fn diffuse_hammon(
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0: f32,
+    NoL: f32,
+    NoV: f32,
+    VoH: f32,
+    LoV: f32
+) -> vec3<f32> {
+    // 参数预处理
+    let alpha = roughness * roughness;
+    let alpha_sq = alpha * alpha;
+    let sqrt_f0 = sqrt(f0) * 0.99999;
+    let ior = (1 + sqrt_f0) / (1 - sqrt_f0);
+    
+    // 能量守恒因子
+    let energy_factor = 1.0 - (4.0 * sqrt(f0) + 5.0 * f0 * f0) / 9.0;
+    
+    // 单次散射项
+    let facing = 0.5 * LoV + 0.5;
+    let fresnel_l = 1.0 - fresnel_dielectric(max(NoL, 0.01), ior);
+    let fresnel_v = 1.0 - fresnel_dielectric(max(NoV, 0.01), ior);
+    let single_smooth = (fresnel_l * fresnel_v) / max(energy_factor,EPSILON);
+    
+    // 粗糙表面修正项（论文启发式公式）
+    let single_rough = max(facing, 0.0) * (-0.2 * facing + 0.45) * (1.0 / max(VoH,0.01) + 2.0);
+    
+    // 混合单次散射项
+    let single = mix(single_smooth, single_rough, roughness) / PI;
+    
+    // 多次散射项（论文数值拟合）
+    let multi = 0.1159 * roughness;
+    
+    // 最终组合
+    return albedo * (multi +single);
+}
+
+fn diffuse_water(
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0: f32,
+    L: vec3<f32>,
+    V: vec3<f32>,
+    H: vec3<f32>
+) -> vec3<f32> {
+    // 微表面法线相关
+    let LoH = max(dot(L, H), 0.0);
+    let VoH = max(dot(V, H), 0.0);
+    let sqrt_f0 = sqrt(f0) * 0.99999;
+    let ior = (1 + sqrt_f0) / (1 - sqrt_f0);
+    
+    // 双向菲涅尔透射
+    let F_in = fresnel_dielectric(LoH,ior);
+    let F_out = fresnel_dielectric(VoH,ior);
+    let transmittance = (1.0 - F_in) * (1.0 - F_out);
+    
+    // 补偿因子（适应水的IOR）
+    let compensation = 1.0 / (1.0 - 0.28 * roughness);
+    
+    // 单次散射项改造
+    let single = transmittance * compensation / PI;
+    
+    // 多次散射项（水体的吸收效应）
+    let absorption = exp(-albedo * (1.0 - roughness) * 2.0);
+    let multi = 0.1159 * roughness * absorption;
+    
+    return (single + multi) * albedo;
+}
+
+struct pbr_shading_res{
+    diffuse: vec3<f32>,
+    specular: vec3<f32>
+};
+
+fn pbr_shading_water(
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0:f32,
+    metallic: f32,
+    N: vec3<f32>,
+    L: vec3<f32>,
+    V: vec3<f32>,
+    H: vec3<f32>
+) -> pbr_shading_res {
+    // 几何参数
+    var res: pbr_shading_res;
+    let NoL = max(dot(N, L), 0.0);
+    let NoV = max(dot(N, V), 0.0);
+    let NoH = max(dot(N, H), 0.0);
+    let VoH = max(dot(V, H), 0.0);
+    let LoV = max(dot(L, V), 0.0);
+    
+    // 高光项计算
+    let alpha_sq = (roughness * roughness);
+    let D = distribution_ggx(NoH, alpha_sq);
+    let G = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
+    let F = fresnel_schlick(VoH, mix(vec3<f32>(0.02), albedo, metallic));
+    
+    // 高光BRDF
+    let specular_brdf = (D * G * F) / (4.0 * NoL * NoV + 1e-5);
+    
+    // 漫反射项
+    let diffuse_brdf = diffuse_water(albedo, roughness, f0, L,V,H);
+    
+    let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+    res.diffuse = diffuse_brdf * kD * NoL;
+    res.specular = specular_brdf * NoL;
+    return res;
+}
+
+fn pbr_shading(
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0:f32,
+    metallic: f32,
+    N: vec3<f32>,
+    L: vec3<f32>,
+    V: vec3<f32>,
+    H: vec3<f32>
+) -> pbr_shading_res {
+    // 几何参数
+    var res: pbr_shading_res;
+    let NoL = max(dot(N, L), 0.0);
+    let NoV = max(dot(N, V), 0.0);
+    let NoH = max(dot(N, H), 0.0);
+    let VoH = max(dot(V, H), 0.0);
+    let LoV = max(dot(L, V), 0.0);
+    
+    // 高光项计算
+    let alpha_sq = (roughness * roughness);
+    let D = distribution_ggx(NoH, alpha_sq);
+    let G = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
+    let F = fresnel_schlick(VoH, mix(vec3<f32>(0.02), albedo, metallic));
+    
+    // 高光BRDF
+    let specular_brdf = (D * G * F) / (4.0 * NoL * NoV + 1e-5);
+    
+    // 漫反射项
+    let diffuse_brdf = diffuse_hammon(albedo, roughness, f0,NoL,NoV, VoH,LoV);
+    
+    let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+    res.diffuse = diffuse_brdf * kD * NoL;
+    res.specular = specular_brdf * NoL;
+    return res;
+}
+
+fn lambertNoTangent(normal: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let theta = 6.283185 * uv.x;
+    
+    // 将v坐标从[0,1]映射到[-1,1]
+    let adjusted_vy = 2.0 * uv.y - 1.0;
+    
+    // 生成球面坐标点
+    let sphere_radius_xy = sqrt(1.0 - adjusted_vy * adjusted_vy);
+    let sphere_point = vec3<f32>(
+        sphere_radius_xy * cos(theta),
+        sphere_radius_xy * sin(theta),
+        adjusted_vy
+    );
+    
+    // 合成并归一化方向向量
+    return normalize(normal + sphere_point);
+}
+
+fn sample_ggx_vndf(viewer_dir: vec3<f32>, alpha: vec2<f32>, hash: vec2<f32>) -> vec3<f32> {
+    // Improved GGX importance sampling function by zombye
+    // https://ggx-research.github.io/publication/2023/06/09/publication-ggx.html
+
+    // Transform viewer direction to the hemisphere configuration
+    var v_dir = normalize(vec3<f32>(alpha * viewer_dir.xy, viewer_dir.z));
+
+    // Sample a reflection direction off the hemisphere
+    let tau: f32 = 6.2831853; // 2 * PI
+    let phi: f32 = tau * hash.x;
+    let cos_theta: f32 = fma(1.0 - hash.y, 1.0 + v_dir.z, -v_dir.z);
+    let sin_theta: f32 = sqrt(clamp(1.0 - cos_theta * cos_theta, 0.0, 1.0));
+    let reflected: vec3<f32> = vec3<f32>(
+        vec2<f32>(cos(phi), sin(phi)) * sin_theta,
+        cos_theta
+    );
+
+    // Evaluate halfway direction
+    let halfway: vec3<f32> = reflected + v_dir;
+
+    // Transform back to hemiellipsoid configuration
+    return normalize(vec3<f32>(
+        alpha * halfway.xy,
+        halfway.z
+    ));
+}
+
+//PBR
+
+//FRAGMENT
+const NUM_STEPS: i32 = 8;
+const ITER_GEOMETRY: i32 = 4;
+const ITER_FRAGMENT: i32 = 8;
+const SEA_HEIGHT: f32 = 0.6;
+const SEA_CHOPPY: f32 = 4.0;
+const SEA_SPEED: f32 = 0.8;
+const SEA_FREQ: f32 = 0.16;
+const FOV:f32 = tan(radians(60.0));
+const SEA_BASE: vec3<f32> = vec3<f32>(0.0, 0.09, 0.18);
+const SEA_WATER_COLOR: vec3<f32> = vec3<f32>(0.7, 0.8, 0.9) * 0.6;
+const octave_m: mat2x2<f32> = mat2x2<f32>(1.6, 1.2, -1.2, 1.6);
+
+fn SEA_TIME() -> f32 { return 1.0 + uniforms.iTime * SEA_SPEED; }
+fn EPSILON_NRM() -> f32 { return 0.1 / uniforms.iResolution.x; }
+fn TIME() -> f32 {return uniforms.iTime * 0.1;}
+fn ANGLE() -> vec3<f32> {return vec3<f32>(sin(TIME()*3.0)*0.1,0.0,TIME());}
+fn POS() -> vec3<f32> {return vec3<f32>(0.0,5.0,0.0);}
+
+fn fromEuler(ang: vec3<f32>) -> mat3x3<f32> {
+    let a1 = vec2<f32>(sin(ang.x), cos(ang.x));
+    let a2 = vec2<f32>(sin(ang.y), cos(ang.y));
+    let a3 = vec2<f32>(sin(ang.z), cos(ang.z));
+    return mat3x3<f32>(
+        vec3<f32>(a1.y*a3.y + a1.x*a2.x*a3.x, a1.y*a2.x*a3.x + a3.y*a1.x, -a2.y*a3.x),
+        vec3<f32>(-a2.y*a1.x, a1.y*a2.y, a2.x),
+        vec3<f32>(a3.y*a1.x*a2.x + a1.y*a3.x, a1.x*a3.x - a1.y*a3.y*a2.x, a2.y*a3.y)
+    );
+}
+
+fn hash(p: vec2<f32>) -> f32 {
+    let h = dot(p, vec2<f32>(127.1, 311.7));    
+    return fract(sin(h) * 43758.5453123);
+}
+
+
+fn noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    
+    return -1.0 + 2.0 * mix(
+        mix(hash(i + vec2<f32>(0.0, 0.0)), hash(i + vec2<f32>(1.0, 0.0)), u.x),
+        mix(hash(i + vec2<f32>(0.0, 1.0)), hash(i + vec2<f32>(1.0, 1.0)), u.x),
+        u.y
+    );
+}
+
+fn diffuse(n: vec3<f32>, l: vec3<f32>, p: f32) -> f32 {
+    return pow(dot(n, l) * 0.4 + 0.6, p);
+}
+
+fn specular(n: vec3<f32>, l: vec3<f32>, e: vec3<f32>, s: f32) -> f32 {
+    //let nrm = (s + 8.0) / (PI * 8.0); 
+    return pow(max(dot(reflect(e, n), l), 0.0), s);
+}
+
+fn getSkyColor(e: vec3<f32>) -> vec3<f32> {
+    let ey = (max(e.y, 0.0) * 0.8 + 0.2) * 0.8;
+    return vec3<f32>(
+        pow(1.0 - ey, 2.0),
+        1.0 - ey,
+        0.6 + (1.0 - ey) * 0.4
+    ) * 1.1;
+}
+
+fn get_tbn(n:vec3<f32>)->mat3x3<f32>{
+    var tangent : vec3<f32>;
+    if(n.y > 0.99){
+        tangent = vec3<f32>(1.0,0.0,0.0);
+    }
+    else{
+        tangent = normalize(cross(vec3<f32>(0.0,1.0,0.0),n));
+    }
+    let bitangent = normalize(cross(n,tangent));
+    return mat3x3<f32>(tangent,bitangent,n);
+}
+
+fn getSeaColor_Ph(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: vec3<f32>,
+    sun_color:vec3<f32>,moon_color:vec3<f32>,
+    ambient:vec3<f32>) -> vec3<f32> {  
+    //菲涅尔项计算
+    var fresnel: f32 = clamp(1.0 - dot(n, -eye), 0.0, 1.0);
+    fresnel = min(fresnel * fresnel * fresnel, 0.5);
+
+    //反射和折射成分
+    let rl = reflect(eye, n);
+    let h = normalize(-eye + l);
+    let pbr_res = pbr_shading_water(SEA_WATER_COLOR * sun_color * 0.12,0.002,0.02,0.0,n,l,-eye,h);
+    let reflected: vec3<f32> = atmosphere_scattering(rl,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0)) + draw_sun(rl,sun_color);
+    let refracted: vec3<f32> = SEA_BASE  + (diffuse(n, l, 80.0) * sun_color * SEA_WATER_COLOR) * 0.12; 
+
+    // 基础颜色混合
+    var color: vec3<f32> = mix(refracted, reflected, fresnel);
+
+    // 距离衰减效果
+    let atten: f32 = max(1.0 - dot(dist, dist) * 0.001, 0.0);
+    color += (SEA_WATER_COLOR * (p.y - SEA_HEIGHT)) * 0.18 * atten;
+
+    //高光添加
+    color += ACESToneMapping(vec3(specular(n, l, eye, 60.0)) * sun_color,0.25);
+
+    return ACESToneMapping(refracted,0.72);
+}
+
+fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: vec3<f32>,
+                sun_color:vec3<f32>,moon_color:vec3<f32>,
+                ) -> vec3<f32> {  
+
+    let fresnel = fresnel_schlick(dot(n, -eye), vec3(0.02));
+    //反射和折射成分
+    let rl = reflect(eye, n);
+    let h = normalize(-eye + l);
+    let pbr_res = pbr_shading_water(SEA_WATER_COLOR * sun_color * 0.12,0.002,0.02,0.0,n,l,-eye,h);
+    let reflected: vec3<f32> = atmosphere_scattering(rl,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0)) + draw_sun(rl,sun_color);
+    let refracted: vec3<f32> = SEA_BASE  + (pbr_res.diffuse * sun_color) * 0.05; 
+    
+    // 基础颜色混合
+    var color: vec3<f32> = mix(refracted, reflected, fresnel);
+    
+    // 距离衰减效果
+    let atten: f32 = max(1.0 - dot(dist, dist) * 0.001, 0.0);
+    color += (SEA_WATER_COLOR * (p.y - SEA_HEIGHT)) * 0.18 * atten;
+    
+    //高光添加
+    color += ACESToneMapping(pbr_res.specular * sun_color,0.25);
+    
+    return ACESToneMapping(color,0.72);
+    
+}
+
+fn sea_octave(uv: vec2<f32>, choppy: f32) -> f32 {
+    var uv_mut = uv;
+    uv_mut += noise(uv);
+    let wv = 1.0 - abs(sin(uv_mut));
+    let swv = abs(cos(uv_mut));
+    return pow(1.0 - pow(mix(wv, swv, wv).x * mix(wv, swv, wv).y, 0.65), choppy);
+}
+
+fn map(p: vec3<f32>) -> f32 {
+    var freq: f32 = SEA_FREQ;
+    var amp: f32 = SEA_HEIGHT;
+    var choppy: f32 = SEA_CHOPPY;
+    var uv: vec2<f32> = p.xz + vec2(0.5);
+    uv.x *= 0.75;
+    
+    var h: f32 = 0.0;
+    for(var i: i32 = 0; i < ITER_GEOMETRY; i++) { 
+        let d = sea_octave((uv + SEA_TIME()) * freq, choppy) +
+                sea_octave((uv - SEA_TIME()) * freq, choppy);
+        h += d * amp;
+        uv = uv * octave_m;
+        freq *= 1.9;
+        amp *= 0.22;
+        choppy = mix(choppy, 1.0, 0.2);
+    }
+    return p.y - h;
+}
+
+fn map_detail(p: vec3<f32>) -> f32 {
+    var freq: f32 = SEA_FREQ;
+    var amp: f32 = SEA_HEIGHT;
+    var choppy: f32 = SEA_CHOPPY;
+    var uv: vec2<f32> = p.xz + vec2(0.5);
+    uv.x *= 0.75;
+    
+    var h: f32 = 0.0;
+    for(var i: i32 = 0; i < ITER_FRAGMENT; i++) { 
+        let d = sea_octave((uv + SEA_TIME()) * freq, choppy) +
+                sea_octave((uv - SEA_TIME()) * freq, choppy);
+        h += d * amp;
+        uv = uv * octave_m;
+        freq *= 1.9;
+        amp *= 0.22;
+        choppy = mix(choppy, 1.0, 0.2);
+    }
+    return p.y - h;
+}
+
+fn getNormal(p:vec3<f32>,eps:f32) -> vec3<f32> {
+    var n:vec3<f32>;
+    n.y = map_detail(p);
+    n.x = map_detail(vec3<f32>(p.x + eps, p.y, p.z)) - n.y;
+    n.z = map_detail(vec3<f32>(p.x, p.y, p.z + eps)) - n.y;
+    n.y = eps;
+    let nrm = normalize(n);
+    return normalize(n);
+}
+
+const ball_pos : vec3<f32> = vec3<f32>(0.0, 6.0, -10.0);
+const ball_radius : f32 = 1.0;
+const light_dist : f32 = 2.0;
+const light_speed : f32 = 5.0;
+const light_strength : f32 = 1.0;
+
+fn get_ball_pos() -> vec3<f32> {
+    return ball_pos * fromEuler(ANGLE());
+}
+
+fn get_light_data(ball_pos: vec3<f32>) -> mat2x3<f32> {
+    let dir = vec3(cos(uniforms.iTime * 0.1 * light_speed),sin(uniforms.iTime * 0.16 * light_speed),sin(uniforms.iTime * 0.1 * light_speed));
+    let color = abs(normalize(dir)) * 3.0 * light_strength;
+    return mat2x3<f32>(dir * light_dist + ball_pos, color);
+}
+
+struct TracingResult {
+    distance: f32,
+    position: vec3<f32>,
+    hit_type: u32,// 0 SEA 1 SKY 2 BALL
+}; 
+
+fn is_hit_ball(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
+    let dis = length(ori - get_ball_pos());
+    let d = dis * dot(normalize(get_ball_pos() - ori), dir);
+    let l = sqrt(dis * dis - d * d);
+    if(l < ball_radius && d > 0.0){
+        let t = sqrt(sqr(ball_radius) - sqr(l));
+        return TracingResult(d - t, ori + dir * (d - t), 2u);
+    }
+    return TracingResult(0.0,vec3<f32>(0.0,0.0,0.0),0u);
+}
+
+fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
+    var tm: f32 = 0.0;
+    var tx: f32 = TX;
+    var p: vec3<f32>;
+    var hx = map(ori + dir * tx);
+    if(hx > 0.0) {
+        return TracingResult(tx, ori + dir * tx, 1u);
+    }
+    
+    //var hm: f32 = map(ori);
+    tx = min((POS().y + 2.0) / dir.y,tx);
+    tm = max((POS().y - 3.0) / dir.y,0.0);
+    var hm = map(ori + dir * tm);
+    hx = map(ori + dir * tx);
+    for(var i: i32 = 0; i < NUM_STEPS; i++) {
+        let tmid: f32 = mix(tm, tx, hm / (hm - hx));
+        p = ori + dir * tmid;
+        let hmid = map(p);
+        
+        if(hmid < 0.0) {
+            tx = tmid;
+            hx = hmid;
+        } else {
+            tm = tmid;
+            hm = hmid;
+        }
+        if(abs(hmid) < EPSILON / 2.0) { break; }
+    }
+    return TracingResult(
+        mix(tm, tx, hm / (hm - hx)),  
+        p,
+        0u                         
+    );
+}
+
+fn pbr_env(    
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0:vec3<f32>,
+    metallic: f32,
+    N: vec3<f32>,
+    L: vec3<f32>,
+    V: vec3<f32>,
+    H: vec3<f32>) -> vec3<f32>{
+
+    let NoL = dot(N, L);
+    let NoV = max(dot(N, V), 0.0);
+    let NoH = max(dot(N, H), 0.0);
+    let VoH = max(dot(V, H), 0.0);
+    let LoV = max(dot(L, V), 0.0);
+    var cout = vec3<f32>(0.0);
+
+    if(NoL > 0.0){
+        let alpha_sq = (roughness * roughness);
+        //let D = distribution_ggx(NoH, alpha_sq);
+        let v1 = visibility_smith_ggx_single(NoV, alpha_sq);
+        let v2 = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
+        var F: vec3<f32>;
+        if(metallic > 0.001){
+            F = fresnel_schlick(NoL,f0);
+        }
+        else{
+            F = vec3(fresnel_dielectric(NoL,f0_to_ior(f0.x)));
+        }
+        cout += F * (2.0 * NoL * v2 / v1);
+    }
+    return cout;
+}
+
+fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
+    var ndc_uv = vec2<f32>(uv.x * 2.0 - 1.0,uv.y * 2.0 - 1.0);
+    ndc_uv.x *= uniforms.iResolution.x / uniforms.iResolution.y;
+    var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-FOV));
+    //dir.z += length(dir.xy) * 0.14;
+    //dir = normalize(dir + vec3(0.0,0.2,0.0));
+    //return normalize(dir);
+    return normalize(normalize(dir) * fromEuler(ANGLE()));
+}
+
+
+
+//const pos:vec3<f32> = vec3<f32>(3.0,3.0,3.0);
+
+fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool,should_draw_sun:bool) -> vec3<f32>{
+    var sky_color = atmosphere_scattering(dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    sky_color += draw_sun(dir,sun_color) * select(0.0,1.0,should_draw_sun);
+    sky_color = ACESToneMapping(sky_color,0.5);
+
+    var res :TracingResult;
+    var dist :vec3<f32>;
+    var n : vec3<f32>;
+
+    if(trash){
+        //因为要求流平衡，必须要在一些没必要采样颜色的时候采样颜色，故写成这样加速
+        res = TracingResult(0.0,vec3<f32>(0.0,0.0,0.0),0u);
+        dist = vec3<f32>(1.0);
+        n = vec3<f32>(0.0);
+    }
+    else{
+        res = heightMapTracing(p, dir);
+        dist = res.position - p;
+        n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
+    }
+    var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color);
+    let alp = 1 - smoothstep(-0.02,0.0,dir.y);
+
+    let horizon_dir = normalize(vec3(dir.xz,min(dir.y,-0.1)).xzy);
+    let horizon_color = atmosphere_scattering(horizon_dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+
+    if(trash){
+        return vec3(0.0);
+    }
+
+    let horizon_fac = linear_step(0.1,1.0,exp(-75 * sqr(uniforms.sun_dir.y + 0.0496)));
+    let fog_color = mix(sky_color,horizon_color,sqr(horizon_fac));
+    let fog = border_fog(dist,dir);
+    
+    sea_color = mix(fog_color,sea_color,fog);
+    sky_color = mix(fog_color,sky_color,fog);
+    return mix(sky_color,sea_color,alp);
+}
+
+fn get_color_without_sun(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) -> vec3<f32>{
+    var sky_color = atmosphere_scattering(dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    sky_color = ACESToneMapping(sky_color,0.5);
+
+    var res :TracingResult;
+    var dist :vec3<f32>;
+    var n : vec3<f32>;
+
+    if(trash){
+        //因为要求流平衡，必须要在一些没必要采样颜色的时候采样颜色，故写成这样加速
+        res = TracingResult(0.0,vec3<f32>(0.0,0.0,0.0),0u);
+        dist = vec3<f32>(1.0);
+        n = vec3<f32>(0.0);
+    }
+    else{
+        res = heightMapTracing(p, dir);
+        dist = res.position - p;
+        n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
+    }
+    var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color);
+    let alp = 1 - smoothstep(-0.02,0.0,dir.y);
+
+    let horizon_dir = normalize(vec3(dir.xz,min(dir.y,-0.1)).xzy);
+    let horizon_color = atmosphere_scattering(horizon_dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+
+    if(trash){
+        return vec3(0.0);
+    }
+
+    let horizon_fac = linear_step(0.1,1.0,exp(-75 * sqr(uniforms.sun_dir.y + 0.0496)));
+    let fog_color = mix(sky_color,horizon_color,sqr(horizon_fac));
+    let fog = border_fog(dist,dir);
+    
+    sea_color = mix(fog_color,sea_color,fog);
+    sky_color = mix(fog_color,sky_color,fog);
+    return mix(sky_color,sea_color,alp);
+}
+
+const ball_material:Material = Material(vec3(0.8,0.5,0.5),vec3(0.04),0.1,0.0);
+const env_sample_size:f32 = 32;
+
+fn get_ball_material() -> Material{
+    var ball:Material = ball_material; //将来修改
+    ball.metallic = uniforms.ball_data[1];
+    ball.roughness = uniforms.ball_data[0];
+    ball.f0 = mix(vec3(0.04),ball.albedo,ball.metallic);
+    return ball;
+}
+const KERNEL_5: array<f32, 5> = array<f32, 5>(
+    0.0625, 
+    0.25, 
+    0.375, 
+    0.25, 
+    0.0625 
+);
+
+fn fast_gaussian_5x5(uv: vec2<f32>) -> vec3<f32> {
+    let texture_size = textureDimensions(env_texture);
+    let inv_size = 1.0 / vec2<f32>(texture_size);
+    var result = vec3<f32>(0.0);
+
+    for (var i: i32 = -2; i <= 2; i++) {
+        let offset = vec2<f32>(f32(i), 0.0) * inv_size;
+        result += textureSample(env_texture, env_sampler, uv + offset).rgb * KERNEL_5[i + 2];
+    }
+    return result;
+}
+
+fn sample_env_texture(dir: vec3<f32>, trash: bool) -> vec3<f32> {
+    var uv: vec2<f32>;
+    if (trash) {
+        uv = vec2<f32>(0.0, 0.0);
+    } else {
+        uv = project_sky(dir);
+    }
+    uv.y = 1.0 - uv.y;
+    
+    return fast_gaussian_5x5(uv);
+}
+
+fn get_env_color(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) ->vec3<f32> {
+    let ball = get_ball_material();
+    var env_color = vec3<f32>(0.0);
+    let tbn = get_tbn(n);
+    let base_color = ball.albedo;
+    let f0 =ball.f0;
+    let roughness = ball.roughness;
+    let metallic = ball.metallic;
+    for(var i:f32 = 0; i < env_sample_size; i+=1){
+        let hash_uv = vec2<f32>(hash(vec2(i / env_sample_size) + vec2(0.62,0.32)),hash(vec2(i / env_sample_size) + vec2(0.32,0.62)));
+        let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(0.5),hash_uv);
+        let rl = reflect(v,microfacet_normal);
+        let h = normalize(-v + rl);
+        let pbr_env_res = pbr_env(base_color,roughness,f0,metallic,n,rl,-v,h);
+        let t = (trash || dot(rl,n) < 0.001);
+        let color = sample_env_texture(rl,t);
+        env_color += pbr_env_res * color;
+    }
+    env_color /= env_sample_size;
+    return env_color;
+}
