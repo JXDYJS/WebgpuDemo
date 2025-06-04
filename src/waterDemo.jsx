@@ -1,9 +1,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-
-
-
 function angleToSunDirection(angle) {
   let c = Math.cos(angle / 180 * Math.PI);
   let s = Math.sin(angle / 180 * Math.PI);
@@ -15,8 +12,8 @@ function angleToSunDirection(angle) {
 async function loadCombinedShaders({file1,file2}) {
   try {
     const [waterdemo, main] = await Promise.all([
-      fetch(`./src/shader/${file1}`).then(r => r.text()),
-      fetch(`./src/shader/${file2}`).then(r => r.text())
+      fetch(`./shader/${file1}`).then(r => r.text()),
+      fetch(`./shader/${file2}`).then(r => r.text())
     ]);
     // 确保main内容在最后且只出现一次
     const combinedCode =`${waterdemo}\n//# MAIN_SHADER_START\n${main}`;
