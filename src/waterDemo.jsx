@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 function angleToSunDirection(angle) {
   let c = Math.cos(angle / 180 * Math.PI);
   let s = Math.sin(angle / 180 * Math.PI);
-  var dir = new Float32Array([c, s, 0.1]);
+  var dir = new Float32Array([c, s, 0.05]);
   let l = Math.sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
   dir = [dir[0] / l, dir[1] / l, dir[2] / l];
   return dir;

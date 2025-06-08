@@ -44,7 +44,7 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
         let t = dot(-dir,nor);
         color += pbr_res.diffuse * sun_color * 0.15 + pbr_res.specular * sun_color;
         let ambient = sun_color * (n + 0.5) * 0.3 * base_color;
-        color += ambient * 0.05 * (1 - metallic);
+        color += ambient * 0.05 * max((1 - metallic),0.2);
         let env_res = pbr_env(base_color,roughness,ball.f0,metallic,nor,normalize(r),-dir,normalize(-dir + r));
         color += (mix(scene_color * env_res,env_color,roughness)) * (1 - roughness);
 
