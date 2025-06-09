@@ -6,18 +6,27 @@ https://zhuanlan.zhihu.com/p/477489052
 https://www.gdcvault.com/play/1024478/PBR-Diffuse-Lighting-for-GGX
 */
 
-
-
-
 struct Uniforms {
     iTime: f32,
     @align(8) iResolution: vec2<f32>,
     @align(16) sun_dir: vec3<f32>,
+    @align(32) ball_data:vec2<f32>,
     
 };
+
+struct Pos_data{
+    ball_pos:vec3<f32>,
+    camera_pos:vec3<f32>,
+    light_pos:vec3<f32>,
+};
+
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var atmosphere_scattering_lut: texture_3d<f32>;
 @group(0) @binding(2) var atmosphere_scattering_sampler: sampler;
+@group(0) @binding(3) var env_texture: texture_2d<f32>;
+@group(0) @binding(4) var env_sampler: sampler;
+@group(0) @binding(5) var env_last_frame: texture_2d<f32>;
+@group(0) @binding(6) var env_last_frame_sampler: sampler;
 
 
 //大气部分函数
@@ -32,6 +41,7 @@ const MOON_B: f32 = 1.0;
 const PI: f32 = 3.141592;
 const TAU: f32 = 6.283185307179586;
 const HALF_PI: f32 = PI / 2.0;
+const RCP_PI: f32 = 0.3183098861837907;
 const EPSILON: f32 = 1e-3;
 const DEGREE: f32 = PI / 180.0;
 const TX:f32 = 500.0;
@@ -103,6 +113,10 @@ fn sqr(a:f32)->f32{
 
 fn pow5(x: f32) -> f32 {
     return x * x * x * x * x;
+}
+
+fn max30(a: vec3<f32>)->vec3<f32>{
+    return vec3<f32>(max(a.x,0.0),max(a.y,0.0),max(a.z,0.0));
 }
 
 fn fast_acos(x:f32) -> f32 {
@@ -328,6 +342,70 @@ fn atmosphere_scattering(
     return  atmosphere;
 }
 
+fn project_sky(direction: vec3<f32>) -> vec2<f32> {
+    var projected_dir: vec2<f32> = normalize(direction.xz);
+    
+
+    let azimuth_angle: f32 = PI + atan2(projected_dir.x, -projected_dir.y);
+
+    let altitude_angle: f32 = HALF_PI -  fast_acos(clamp(direction.y, -1.0, 1.0));
+    
+    // 计算基础坐标
+    var coord: vec2<f32>;
+    coord.x = azimuth_angle * (1.0 / TAU);
+    let signed_alt: f32 = sign(altitude_angle);
+    coord.y = 0.5 + 0.5 * signed_alt * sqrt(2.0 * RCP_PI * abs(altitude_angle));
+    
+    // 从Uniform获取分辨率
+    let sky_map_pixel_size: vec2<f32> = 1.0 / uniforms.iResolution;
+    
+    // 边缘填充计算
+    let pad_amount: f32 = 2.0;
+    let mul: f32 = 1.0 - 2.0 * pad_amount * sky_map_pixel_size.x;
+    let add: f32 = pad_amount * sky_map_pixel_size.x;
+    coord.x = coord.x * mul + add;
+    
+    return coord;
+}
+
+fn unproject_sky(coord: vec2<f32>) -> vec3<f32> {
+    
+    // 从Uniform获取分辨率
+    let sky_map_pixel_size: vec2<f32> = 1.0 / uniforms.iResolution;
+    let pad_amount: f32 = 2.0;
+    
+    // 反向填充计算
+    let inverse_mul: f32 = 1.0 / (1.0 - 2.0 * pad_amount * sky_map_pixel_size.x);
+    let inverse_add: f32 = -pad_amount * sky_map_pixel_size.x * inverse_mul;
+    let unpacked_x: f32 = coord.x * inverse_mul + inverse_add;
+    
+    // 保证坐标在[0,1)范围内
+    var new_coord: vec2<f32> = vec2(fract(unpacked_x), coord.y);
+    
+    // 高度角非线性映射
+    new_coord.y = select(
+        -pow(1.0 - 2.0 * new_coord.y, 2.0),
+        pow(2.0 * new_coord.y - 1.0, 2.0),
+        new_coord.y >= 0.5
+    );
+    
+    // 角度重建
+    let azimuth_angle = new_coord.x * TAU - PI;
+    let altitude_angle = new_coord.y * HALF_PI;
+    
+    // 三维坐标重建
+    let altitude_cos = cos(altitude_angle);
+    let altitude_sin = sin(altitude_angle);
+    let azimuth_cos = cos(azimuth_angle);
+    let azimuth_sin = sin(azimuth_angle);
+    
+    return vec3<f32>(
+        altitude_cos * azimuth_sin,
+        altitude_sin,
+        -altitude_cos * azimuth_cos
+    );
+}
+
 fn get_ambient_color(sun_color: vec3<f32>, moon_color: vec3<f32>) -> vec3<f32> {
     var sky_dir = normalize(vec3(0.0, 1.0, -0.8));
     var sky_color = atmosphere_scattering(sky_dir, sun_color, uniforms.sun_dir, moon_color, moon_dir);
@@ -348,7 +426,7 @@ fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
 	let center_to_edge = max(2 * (TAU / 360.0) - fast_acos(nu),0.0);
 	let limb_darkening = pow(vec3(1.0 - sqr(1.0 - center_to_edge)), 0.5 * alpha);
 
-	return 40.0 * sun_color * step(1e-5, center_to_edge) * limb_darkening;
+	return 40.0 * sun_color * step(1e-5, center_to_edge);
 }
 //ATOMOSPHERE
 
@@ -356,6 +434,12 @@ fn draw_sun(ray_dir:vec3<f32>,sun_color:vec3<f32>)->vec3<f32> {
 //PBR部分
 //
 
+struct Material{
+    albedo:vec3<f32>,
+    f0:vec3<f32>,
+    roughness:f32,
+    metallic:f32,
+};
 
 // GGX法线分布函数
 fn distribution_ggx(NoH: f32, alpha_sq: f32) -> f32 {
@@ -377,6 +461,10 @@ fn visibility_smith_ggx_joint(NoL: f32, NoV: f32, alpha_sq: f32) -> f32 {
     return 1.0 / (1.0 + lambda_v + lambda_l + 1e-5); // 添加防除零保护
 }
 
+fn f0_to_ior(f0: f32) -> f32 {
+    return (1.0 + sqrt(f0)) / (1.0 - sqrt(f0));
+}
+
 // 菲涅尔近似（Schlick）
 fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
     return f0 + (vec3<f32>(1.0) - f0) * pow5(1.0 - cos_theta);
@@ -392,42 +480,42 @@ fn fresnel_dielectric(cos_theta: f32, ior: f32) -> f32 {
     return 0.5 * a * a * (1.0 + b * b);
 }
 
-// fn diffuse_hammon(
-//     albedo: vec3<f32>,
-//     roughness: f32,
-//     f0: f32,
-//     NoL: f32,
-//     NoV: f32,
-//     VoH: f32,
-//     LoV: f32
-// ) -> vec3<f32> {
-//     // 参数预处理
-//     let alpha = roughness * roughness;
-//     let alpha_sq = alpha * alpha;
-//     let sqrt_f0 = sqrt(f0) * 0.99999;
-//     let ior = (1 + sqrt_f0) / (1 - sqrt_f0);
+fn diffuse_hammon(
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0: f32,
+    NoL: f32,
+    NoV: f32,
+    VoH: f32,
+    LoV: f32
+) -> vec3<f32> {
+    // 参数预处理
+    let alpha = roughness * roughness;
+    let alpha_sq = alpha * alpha;
+    let sqrt_f0 = sqrt(f0) * 0.99999;
+    let ior = (1 + sqrt_f0) / (1 - sqrt_f0);
     
-//     // 能量守恒因子
-//     let energy_factor = 1.0 - (4.0 * sqrt(f0) + 5.0 * f0 * f0) / 9.0;
+    // 能量守恒因子
+    let energy_factor = 1.0 - (4.0 * sqrt(f0) + 5.0 * f0 * f0) / 9.0;
     
-//     // 单次散射项
-//     let facing = 0.5 * LoV + 0.5;
-//     let fresnel_l = 1.0 - fresnel_dielectric(max(NoL, 0.01), ior);
-//     let fresnel_v = 1.0 - fresnel_dielectric(max(NoV, 0.01), ior);
-//     let single_smooth = (fresnel_l * fresnel_v) / max(energy_factor,EPSILON);
+    // 单次散射项
+    let facing = 0.5 * LoV + 0.5;
+    let fresnel_l = 1.0 - fresnel_dielectric(max(NoL, 0.01), ior);
+    let fresnel_v = 1.0 - fresnel_dielectric(max(NoV, 0.01), ior);
+    let single_smooth = (fresnel_l * fresnel_v) / max(energy_factor,EPSILON);
     
-//     // 粗糙表面修正项（论文启发式公式）
-//     let single_rough = max(facing, 0.0) * (-0.2 * facing + 0.45) * (1.0 / VoH + 2.0);
+    // 粗糙表面修正项（论文启发式公式）
+    let single_rough = max(facing, 0.0) * (-0.2 * facing + 0.45) * (1.0 / max(VoH,0.01) + 2.0);
     
-//     // 混合单次散射项
-//     let single = mix(single_smooth, single_rough, roughness) / PI;
+    // 混合单次散射项
+    let single = mix(single_smooth, single_rough, roughness) / PI;
     
-//     // 多次散射项（论文数值拟合）
-//     let multi = 0.1159 * roughness;
+    // 多次散射项（论文数值拟合）
+    let multi = 0.1159 * roughness;
     
-//     // 最终组合
-//     return albedo * (multi +single);
-// }
+    // 最终组合
+    return albedo * (multi +single);
+}
 
 fn diffuse_water(
     albedo: vec3<f32>,
@@ -502,33 +590,88 @@ fn pbr_shading(
     return res;
 }
 
-//PBR
-
-
-//VERTEX
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) sun_color:vec3<f32>,
-    @location(3) moon_color:vec3<f32>,
-    @location(4) ambient:vec3<f32>
-};
-
-@vertex
-fn vertex_main(@location(0) position: vec2<f32>,@location(1) color:vec4<f32>) -> VertexOutput{
-    var output: VertexOutput;
-    output.position = vec4<f32>(position * 2.0 - 1.0,0.0,1.0);
-    output.uv = vec2<f32>(position.x,position.y);
-    output.color = color;
-    output.sun_color = get_sun_exposure() * get_sun_tint();
-    output.moon_color = get_moon_exposure() * get_moon_tint();
-    output.ambient = vec3(0.15,0.2,0.1);
-    return output;
+fn pbr_shading(
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0:f32,
+    metallic: f32,
+    N: vec3<f32>,
+    L: vec3<f32>,
+    V: vec3<f32>,
+    H: vec3<f32>
+) -> pbr_shading_res {
+    // 几何参数
+    var res: pbr_shading_res;
+    let NoL = max(dot(N, L), 0.0);
+    let NoV = max(dot(N, V), 0.0);
+    let NoH = max(dot(N, H), 0.0);
+    let VoH = max(dot(V, H), 0.0);
+    let LoV = max(dot(L, V), 0.0);
+    
+    // 高光项计算
+    let alpha_sq = (roughness * roughness);
+    let D = distribution_ggx(NoH, alpha_sq);
+    let G = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
+    let F = fresnel_schlick(VoH, mix(vec3<f32>(0.02), albedo, metallic));
+    
+    // 高光BRDF
+    let specular_brdf = (D * G * F) / (4.0 * NoL * NoV + 1e-5);
+    
+    // 漫反射项
+    let diffuse_brdf = diffuse_hammon(albedo, roughness, f0,NoL,NoV, VoH,LoV);
+    
+    let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+    res.diffuse = diffuse_brdf * kD * NoL;
+    res.specular = specular_brdf * NoL;
+    return res;
 }
 
-//VERTEX
+fn lambertNoTangent(normal: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let theta = 6.283185 * uv.x;
+    
+    // 将v坐标从[0,1]映射到[-1,1]
+    let adjusted_vy = 2.0 * uv.y - 1.0;
+    
+    // 生成球面坐标点
+    let sphere_radius_xy = sqrt(1.0 - adjusted_vy * adjusted_vy);
+    let sphere_point = vec3<f32>(
+        sphere_radius_xy * cos(theta),
+        sphere_radius_xy * sin(theta),
+        adjusted_vy
+    );
+    
+    // 合成并归一化方向向量
+    return normalize(normal + sphere_point);
+}
+
+fn sample_ggx_vndf(viewer_dir: vec3<f32>, alpha: vec2<f32>, hash: vec2<f32>) -> vec3<f32> {
+    // Improved GGX importance sampling function by zombye
+    // https://ggx-research.github.io/publication/2023/06/09/publication-ggx.html
+
+    // Transform viewer direction to the hemisphere configuration
+    var v_dir = normalize(vec3<f32>(alpha * viewer_dir.xy, viewer_dir.z));
+
+    // Sample a reflection direction off the hemisphere
+    let tau: f32 = 6.2831853; // 2 * PI
+    let phi: f32 = tau * hash.x;
+    let cos_theta: f32 = fma(1.0 - hash.y, 1.0 + v_dir.z, -v_dir.z);
+    let sin_theta: f32 = sqrt(clamp(1.0 - cos_theta * cos_theta, 0.0, 1.0));
+    let reflected: vec3<f32> = vec3<f32>(
+        vec2<f32>(cos(phi), sin(phi)) * sin_theta,
+        cos_theta
+    );
+
+    // Evaluate halfway direction
+    let halfway: vec3<f32> = reflected + v_dir;
+
+    // Transform back to hemiellipsoid configuration
+    return normalize(vec3<f32>(
+        alpha * halfway.xy,
+        halfway.z
+    ));
+}
+
+//PBR
 
 //FRAGMENT
 const NUM_STEPS: i32 = 8;
@@ -544,10 +687,15 @@ const SEA_WATER_COLOR: vec3<f32> = vec3<f32>(0.7, 0.8, 0.9) * 0.6;
 const octave_m: mat2x2<f32> = mat2x2<f32>(1.6, 1.2, -1.2, 1.6);
 
 fn SEA_TIME() -> f32 { return 1.0 + uniforms.iTime * SEA_SPEED; }
-fn EPSILON_NRM() -> f32 { return 0.05 / uniforms.iResolution.x; }
+fn EPSILON_NRM() -> f32 { return 0.1 / uniforms.iResolution.x; }
 fn TIME() -> f32 {return uniforms.iTime * 0.1;}
+<<<<<<< HEAD:src/shader/waterdemo.wgsl
 fn ANGLE() -> vec3<f32> {return vec3<f32>(sin(TIME()*3.0)*0.1,sin(TIME())*0.2+0.3,TIME());}
 fn POS() -> vec3<f32> {return vec3<f32>(0.0,5.0,TIME() * 5.0);}
+=======
+fn ANGLE() -> vec3<f32> {return vec3<f32>(sin(TIME()*3.0)*0.1,0.0,TIME());}
+fn POS() -> vec3<f32> {return vec3<f32>(0.0,5.0,0.0);}
+>>>>>>> 09f2d62ea8fea0574470469832c6de16417c4c86:public/shader/waterdemo.wgsl
 
 fn fromEuler(ang: vec3<f32>) -> mat3x3<f32> {
     let a1 = vec2<f32>(sin(ang.x), cos(ang.x));
@@ -596,6 +744,7 @@ fn getSkyColor(e: vec3<f32>) -> vec3<f32> {
     ) * 1.1;
 }
 
+<<<<<<< HEAD:src/shader/waterdemo.wgsl
 fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: vec3<f32>,
                 sun_color:vec3<f32>,moon_color:vec3<f32>,
                 ambient:vec3<f32>) -> vec3<f32> {  
@@ -625,6 +774,50 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     //
     //
     //
+=======
+fn get_tbn(n:vec3<f32>)->mat3x3<f32>{
+    var tangent : vec3<f32>;
+    if(n.y > 0.99){
+        tangent = vec3<f32>(1.0,0.0,0.0);
+    }
+    else{
+        tangent = normalize(cross(vec3<f32>(0.0,1.0,0.0),n));
+    }
+    let bitangent = normalize(cross(n,tangent));
+    return mat3x3<f32>(tangent,bitangent,n);
+}
+
+fn getSeaColor_Ph(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: vec3<f32>,
+    sun_color:vec3<f32>,moon_color:vec3<f32>,
+    ambient:vec3<f32>) -> vec3<f32> {  
+    //菲涅尔项计算
+    var fresnel: f32 = clamp(1.0 - dot(n, -eye), 0.0, 1.0);
+    fresnel = min(fresnel * fresnel * fresnel, 0.5);
+
+    //反射和折射成分
+    let rl = reflect(eye, n);
+    let h = normalize(-eye + l);
+    let pbr_res = pbr_shading_water(SEA_WATER_COLOR * sun_color * 0.12,0.002,0.02,0.0,n,l,-eye,h);
+    let reflected: vec3<f32> = atmosphere_scattering(rl,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0)) + draw_sun(rl,sun_color);
+    let refracted: vec3<f32> = SEA_BASE  + (diffuse(n, l, 80.0) * sun_color * SEA_WATER_COLOR) * 0.12; 
+
+    // 基础颜色混合
+    var color: vec3<f32> = mix(refracted, reflected, fresnel);
+
+    // 距离衰减效果
+    let atten: f32 = max(1.0 - dot(dist, dist) * 0.001, 0.0);
+    color += (SEA_WATER_COLOR * (p.y - SEA_HEIGHT)) * 0.18 * atten;
+
+    //高光添加
+    color += ACESToneMapping(vec3(specular(n, l, eye, 60.0)) * sun_color,0.25);
+
+    return ACESToneMapping(refracted,0.72);
+}
+
+fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: vec3<f32>,
+                sun_color:vec3<f32>,moon_color:vec3<f32>,
+                ) -> vec3<f32> {  
+>>>>>>> 09f2d62ea8fea0574470469832c6de16417c4c86:public/shader/waterdemo.wgsl
 
     let fresnel = fresnel_schlick(dot(n, -eye), vec3(0.02));
     
@@ -647,6 +840,7 @@ fn getSeaColor(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, eye: vec3<f32>, dist: v
     color += ACESToneMapping(pbr_res.specular * sun_color,0.25);
     
     return ACESToneMapping(color,0.72);
+    
 }
 
 fn sea_octave(uv: vec2<f32>, choppy: f32) -> f32 {
@@ -661,7 +855,7 @@ fn map(p: vec3<f32>) -> f32 {
     var freq: f32 = SEA_FREQ;
     var amp: f32 = SEA_HEIGHT;
     var choppy: f32 = SEA_CHOPPY;
-    var uv: vec2<f32> = p.xz;
+    var uv: vec2<f32> = p.xz + vec2(0.5);
     uv.x *= 0.75;
     
     var h: f32 = 0.0;
@@ -681,7 +875,7 @@ fn map_detail(p: vec3<f32>) -> f32 {
     var freq: f32 = SEA_FREQ;
     var amp: f32 = SEA_HEIGHT;
     var choppy: f32 = SEA_CHOPPY;
-    var uv: vec2<f32> = p.xz;
+    var uv: vec2<f32> = p.xz + vec2(0.5);
     uv.x *= 0.75;
     
     var h: f32 = 0.0;
@@ -703,28 +897,64 @@ fn getNormal(p:vec3<f32>,eps:f32) -> vec3<f32> {
     n.x = map_detail(vec3<f32>(p.x + eps, p.y, p.z)) - n.y;
     n.z = map_detail(vec3<f32>(p.x, p.y, p.z + eps)) - n.y;
     n.y = eps;
+    let nrm = normalize(n);
     return normalize(n);
+}
+
+const ball_pos : vec3<f32> = vec3<f32>(0.0, 6.0, -10.0);
+const ball_radius : f32 = 1.0;
+const light_dist : f32 = 2.0;
+const light_speed : f32 = 5.0;
+const light_strength : f32 = 1.0;
+
+fn get_ball_pos() -> vec3<f32> {
+    return ball_pos * fromEuler(ANGLE());
+}
+
+fn get_light_data(ball_pos: vec3<f32>) -> mat2x3<f32> {
+    let dir = vec3(cos(uniforms.iTime * 0.1 * light_speed),sin(uniforms.iTime * 0.16 * light_speed),sin(uniforms.iTime * 0.1 * light_speed));
+    let color = abs(normalize(dir)) * 3.0 * light_strength;
+    return mat2x3<f32>(dir * light_dist + ball_pos, color);
 }
 
 struct TracingResult {
     distance: f32,
     position: vec3<f32>,
+<<<<<<< HEAD:src/shader/waterdemo.wgsl
     hit_sky: bool
 };
+=======
+    hit_type: u32,// 0 SEA 1 SKY 2 BALL
+}; 
+
+fn is_hit_ball(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
+    let dis = length(ori - get_ball_pos());
+    let d = dis * dot(normalize(get_ball_pos() - ori), dir);
+    let l = sqrt(dis * dis - d * d);
+    if(l < ball_radius && d > 0.0){
+        let t = sqrt(sqr(ball_radius) - sqr(l));
+        return TracingResult(d - t, ori + dir * (d - t), 2u);
+    }
+    return TracingResult(0.0,vec3<f32>(0.0,0.0,0.0),0u);
+}
+>>>>>>> 09f2d62ea8fea0574470469832c6de16417c4c86:public/shader/waterdemo.wgsl
 
 fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
     var tm: f32 = 0.0;
     var tx: f32 = TX;
     var p: vec3<f32>;
-    
     var hx = map(ori + dir * tx);
     if(hx > 0.0) {
+<<<<<<< HEAD:src/shader/waterdemo.wgsl
         return TracingResult(tx, ori + dir * tx, true);
+=======
+        return TracingResult(tx, ori + dir * tx, 1u);
+>>>>>>> 09f2d62ea8fea0574470469832c6de16417c4c86:public/shader/waterdemo.wgsl
     }
     
     //var hm: f32 = map(ori);
-    tx = min(POS().y / dir.y,tx);
-    tm = max(POS().y / dir.y - 5.0,0.0);
+    tx = min((POS().y + 2.0) / dir.y,tx);
+    tm = max((POS().y - 3.0) / dir.y,0.0);
     var hm = map(ori + dir * tm);
     hx = map(ori + dir * tx);
     for(var i: i32 = 0; i < NUM_STEPS; i++) {
@@ -739,13 +969,51 @@ fn heightMapTracing(ori: vec3<f32>, dir: vec3<f32>) -> TracingResult {
             tm = tmid;
             hm = hmid;
         }
-        if(abs(hmid) < EPSILON) { break; }
+        if(abs(hmid) < EPSILON / 2.0) { break; }
     }
     return TracingResult(
         mix(tm, tx, hm / (hm - hx)),  
         p,
+<<<<<<< HEAD:src/shader/waterdemo.wgsl
         false                             
+=======
+        0u                         
+>>>>>>> 09f2d62ea8fea0574470469832c6de16417c4c86:public/shader/waterdemo.wgsl
     );
+}
+
+fn pbr_env(    
+    albedo: vec3<f32>,
+    roughness: f32,
+    f0:vec3<f32>,
+    metallic: f32,
+    N: vec3<f32>,
+    L: vec3<f32>,
+    V: vec3<f32>,
+    H: vec3<f32>) -> vec3<f32>{
+
+    let NoL = dot(N, L);
+    let NoV = max(dot(N, V), 0.0);
+    let NoH = max(dot(N, H), 0.0);
+    let VoH = max(dot(V, H), 0.0);
+    let LoV = max(dot(L, V), 0.0);
+    var cout = vec3<f32>(0.0);
+
+    if(NoL > 0.0){
+        let alpha_sq = (roughness * roughness);
+        //let D = distribution_ggx(NoH, alpha_sq);
+        let v1 = visibility_smith_ggx_single(NoV, alpha_sq);
+        let v2 = visibility_smith_ggx_joint(NoL, NoV, alpha_sq);
+        var F: vec3<f32>;
+        if(metallic > 0.001){
+            F = fresnel_schlick(NoL,f0);
+        }
+        else{
+            F = vec3(fresnel_dielectric(NoL,f0_to_ior(f0.x)));
+        }
+        cout += F * (2.0 * NoL * v2 / v1);
+    }
+    return cout;
 }
 
 fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
@@ -753,45 +1021,164 @@ fn calculate_dir(uv: vec2<f32>) -> vec3<f32>{
     ndc_uv.x *= uniforms.iResolution.x / uniforms.iResolution.y;
     var dir = normalize(vec3<f32>(ndc_uv.x,ndc_uv.y,-FOV));
     //dir.z += length(dir.xy) * 0.14;
+<<<<<<< HEAD:src/shader/waterdemo.wgsl
     dir = normalize(dir + vec3(0.0,0.2,0.0));
     //return normalize(dir);
      return normalize(normalize(dir) * fromEuler(ANGLE()));
+=======
+    //dir = normalize(dir + vec3(0.0,0.2,0.0));
+    //return normalize(dir);
+    return normalize(normalize(dir) * fromEuler(ANGLE()));
+>>>>>>> 09f2d62ea8fea0574470469832c6de16417c4c86:public/shader/waterdemo.wgsl
 }
 
 
 
 //const pos:vec3<f32> = vec3<f32>(3.0,3.0,3.0);
 
-fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec3<f32>)->vec3<f32>{
-    let dir = calculate_dir(uv);
+fn get_color(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool,should_draw_sun:bool) -> vec3<f32>{
     var sky_color = atmosphere_scattering(dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
-    sky_color += draw_sun(dir,sun_color);
+    sky_color += draw_sun(dir,sun_color) * select(0.0,1.0,should_draw_sun);
     sky_color = ACESToneMapping(sky_color,0.5);
-    let res = heightMapTracing(POS(), dir);
 
-    let dist = res.position - POS();
-    let n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
-    var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color,ambient);
+    var res :TracingResult;
+    var dist :vec3<f32>;
+    var n : vec3<f32>;
+
+    if(trash){
+        //因为要求流平衡，必须要在一些没必要采样颜色的时候采样颜色，故写成这样加速
+        res = TracingResult(0.0,vec3<f32>(0.0,0.0,0.0),0u);
+        dist = vec3<f32>(1.0);
+        n = vec3<f32>(0.0);
+    }
+    else{
+        res = heightMapTracing(p, dir);
+        dist = res.position - p;
+        n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
+    }
+    var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color);
     let alp = 1 - smoothstep(-0.02,0.0,dir.y);
 
     let horizon_dir = normalize(vec3(dir.xz,min(dir.y,-0.1)).xzy);
     let horizon_color = atmosphere_scattering(horizon_dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+
+    if(trash){
+        return vec3(0.0);
+    }
+
     let horizon_fac = linear_step(0.1,1.0,exp(-75 * sqr(uniforms.sun_dir.y + 0.0496)));
     let fog_color = mix(sky_color,horizon_color,sqr(horizon_fac));
     let fog = border_fog(dist,dir);
     
     sea_color = mix(fog_color,sea_color,fog);
     sky_color = mix(fog_color,sky_color,fog);
+<<<<<<< HEAD:src/shader/waterdemo.wgsl
     //sky_color = dir;
 
 
+=======
+>>>>>>> 09f2d62ea8fea0574470469832c6de16417c4c86:public/shader/waterdemo.wgsl
     return mix(sky_color,sea_color,alp);
 }
 
+fn get_color_without_sun(p:vec3<f32>,dir:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) -> vec3<f32>{
+    var sky_color = atmosphere_scattering(dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+    sky_color = ACESToneMapping(sky_color,0.5);
 
-@fragment
-fn fragment_main(@location(0) uv: vec2<f32>,@location(1) color: vec4<f32>,@location(2) sun_color:vec3<f32>,@location(3) moon_color:vec3<f32>,@location(4) ambient:vec3<f32>) -> @location(0) vec4<f32> {
-    return vec4<f32>(pow(get_pixel(uv,sun_color,moon_color,ambient),vec3<f32>(0.65)),1.0);
+    var res :TracingResult;
+    var dist :vec3<f32>;
+    var n : vec3<f32>;
+
+    if(trash){
+        //因为要求流平衡，必须要在一些没必要采样颜色的时候采样颜色，故写成这样加速
+        res = TracingResult(0.0,vec3<f32>(0.0,0.0,0.0),0u);
+        dist = vec3<f32>(1.0);
+        n = vec3<f32>(0.0);
+    }
+    else{
+        res = heightMapTracing(p, dir);
+        dist = res.position - p;
+        n = getNormal(res.position,dot(dir, dist) * EPSILON_NRM());
+    }
+    var sea_color = getSeaColor(res.position, n, uniforms.sun_dir, dir, dist,sun_color,moon_color);
+    let alp = 1 - smoothstep(-0.02,0.0,dir.y);
+
+    let horizon_dir = normalize(vec3(dir.xz,min(dir.y,-0.1)).xzy);
+    let horizon_color = atmosphere_scattering(horizon_dir,sun_color,uniforms.sun_dir,vec3(0.0,0.0,0.0),vec3(0.0,1.0,0.0));
+
+    if(trash){
+        return vec3(0.0);
+    }
+
+    let horizon_fac = linear_step(0.1,1.0,exp(-75 * sqr(uniforms.sun_dir.y + 0.0496)));
+    let fog_color = mix(sky_color,horizon_color,sqr(horizon_fac));
+    let fog = border_fog(dist,dir);
+    
+    sea_color = mix(fog_color,sea_color,fog);
+    sky_color = mix(fog_color,sky_color,fog);
+    return mix(sky_color,sea_color,alp);
 }
 
-//FRAGMENT
+const ball_material:Material = Material(vec3(0.8,0.5,0.5),vec3(0.04),0.1,0.0);
+const env_sample_size:f32 = 32;
+
+fn get_ball_material() -> Material{
+    var ball:Material = ball_material; //将来修改
+    ball.metallic = uniforms.ball_data[1];
+    ball.roughness = uniforms.ball_data[0];
+    ball.f0 = mix(vec3(0.04),ball.albedo,ball.metallic);
+    return ball;
+}
+const KERNEL_5: array<f32, 5> = array<f32, 5>(
+    0.0625, 
+    0.25, 
+    0.375, 
+    0.25, 
+    0.0625 
+);
+
+fn fast_gaussian_5x5(uv: vec2<f32>) -> vec3<f32> {
+    let texture_size = textureDimensions(env_texture);
+    let inv_size = 1.0 / vec2<f32>(texture_size);
+    var result = vec3<f32>(0.0);
+
+    for (var i: i32 = -2; i <= 2; i++) {
+        let offset = vec2<f32>(f32(i), 0.0) * inv_size;
+        result += textureSample(env_texture, env_sampler, uv + offset).rgb * KERNEL_5[i + 2];
+    }
+    return result;
+}
+
+fn sample_env_texture(dir: vec3<f32>, trash: bool) -> vec3<f32> {
+    var uv: vec2<f32>;
+    if (trash) {
+        uv = vec2<f32>(0.0, 0.0);
+    } else {
+        uv = project_sky(dir);
+    }
+    uv.y = 1.0 - uv.y;
+    
+    return fast_gaussian_5x5(uv);
+}
+
+fn get_env_color(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,sun_color: vec3<f32>,moon_color:vec3<f32>,trash:bool) ->vec3<f32> {
+    let ball = get_ball_material();
+    var env_color = vec3<f32>(0.0);
+    let tbn = get_tbn(n);
+    let base_color = ball.albedo;
+    let f0 =ball.f0;
+    let roughness = ball.roughness;
+    let metallic = ball.metallic;
+    for(var i:f32 = 0; i < env_sample_size; i+=1){
+        let hash_uv = vec2<f32>(hash(vec2(i / env_sample_size) + vec2(0.62,0.32)),hash(vec2(i / env_sample_size) + vec2(0.32,0.62)));
+        let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(0.5),hash_uv);
+        let rl = reflect(v,microfacet_normal);
+        let h = normalize(-v + rl);
+        let pbr_env_res = pbr_env(base_color,roughness,f0,metallic,n,rl,-v,h);
+        let t = (trash || dot(rl,n) < 0.001);
+        let color = sample_env_texture(rl,t);
+        env_color += pbr_env_res * color;
+    }
+    env_color /= env_sample_size;
+    return env_color;
+}

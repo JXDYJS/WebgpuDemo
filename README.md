@@ -1,12 +1,62 @@
-# React + Vite
+代码功能文档
+**
+一、概述
+本代码主要实现了一个基于物理渲染（PBR）的三维场景渲染，包含大气散射效果、海面渲染、球体渲染以及环境光采样等功能。通过一系列复杂的数学计算和纹理采样，模拟出逼真的自然场景光照效果。
+二、数据结构与变量定义
+2.1 结构体定义
+Uniforms结构体：存储了场景的一些全局变量，如时间iTime、屏幕分辨率iResolution、太阳方向sun_dir、球体相关数据ball_data等，这些数据可在外部传入并在着色器中使用。
+Pos_data结构体：定义了场景中球体位置ball_pos、相机位置camera_pos、光源位置light_pos等位置相关数据，不过在当前代码中部分未被充分使用。
+Material结构体：描述材质属性，包括反照率albedo、菲涅尔反射系数f0、粗糙度roughness、金属度metallic ，用于 PBR 计算。
+pbr_shading_res结构体：存储 PBR 着色结果，包含漫反射diffuse和镜面反射specular颜色分量。
+TracingResult结构体：用于光线追踪结果，记录光线与场景物体相交的距离distance、交点位置position以及相交物体类型hit_type（0 代表海面，1 代表天空，2 代表球体）。
+2.2 常量定义
+定义了大量常量，如表示圆周率相关的PI、TAU、HALF_PI、RCP_PI，天体参数（太阳和月亮的颜色、半径等），大气参数（行星半径、大气内外半径等），PBR 相关参数，以及场景渲染相关的常量（如采样步数NUM_STEPS、海面高度SEA_HEIGHT等） 。这些常量为后续计算提供固定参数。
+三、大气散射相关函数
+3.1 辅助函数
+FADE、SUN_WEIGHT、SUN_RAISE、SUN_SET函数：用于计算太阳升起、落下时的相关权重和过渡效果，根据太阳方向uniforms.sun_dir判断太阳位置，影响光照强度和色调变化。
+linear_step、pulse、from_srgb、smoothstep等数学辅助函数：实现线性插值、脉冲函数、sRGB 到线性空间转换、平滑插值等功能，在后续计算中用于颜色转换、数值平滑处理等。
+3.2 大气散射核心函数
+atmosphere_scattering函数：计算大气散射效果，根据光线方向ray_dir、太阳和月亮颜色及方向，通过一系列复杂的几何和光学计算，包括光线与大气的相交距离计算、纹理坐标映射和采样，最终合成大气散射颜色。
+get_sun_exposure、get_sun_tint、get_moon_exposure、get_moon_tint函数：分别计算太阳和月亮的光照强度和色调，考虑太阳升起落下时间、蓝调时刻等因素，为大气散射和场景光照提供光照参数。
+3.3 其他相关函数
+project_sky和unproject_sky函数：实现三维方向向量与二维天空纹理坐标之间的转换，用于天空纹理采样和方向重建。
+get_ambient_color函数：获取环境光颜色，通过计算天空方向的大气散射颜色得到场景的环境光。
+border_fog函数：计算场景边缘的雾效，根据场景位置和观察方向，模拟雾的浓度变化。
+draw_sun函数：绘制太阳，根据光线与太阳方向的夹角，计算太阳的可见度和颜色强度，实现太阳的绘制效果。
+四、PBR 相关函数
+4.1 PBR 基础函数
+distribution_ggx函数：实现 GGX 法线分布函数，计算微表面法线分布概率，用于 PBR 高光计算。
+visibility_smith_ggx_single和visibility_smith_ggx_joint函数：计算 Smith 单方向和双方向遮挡函数，模拟光线在微表面的遮挡效果，影响高光反射强度。
+f0_to_ior函数：将菲涅尔反射系数f0转换为折射率ior，用于介质菲涅尔计算。
+fresnel_schlick函数：实现 Schlick 菲涅尔近似，计算菲涅尔反射系数，模拟物体表面的反射特性。
+fresnel_dielectric函数：计算介质的菲涅尔反射率，根据入射角和折射率计算反射光强度。
+4.2 漫反射计算函数
+diffuse_hammon函数：使用 Hammon 模型计算漫反射，考虑材质属性、光线和观察方向等因素，计算漫反射颜色。
+diffuse_water函数：针对水体的漫反射计算，考虑水体的透射和吸收特性，计算水体漫反射颜色。
+4.3 PBR 着色函数
+pbr_shading和pbr_shading_water函数：分别用于普通材质和水体的 PBR 着色计算，根据材质属性、光线和观察方向，计算漫反射和镜面反射颜色，得到最终的 PBR 着色结果。
+五、海面相关函数
+5.1 海面高度计算函数
+sea_octave函数：计算海面某一频率下的波浪高度，通过噪声函数和三角函数混合，模拟海面波浪起伏。
+map和map_detail函数：计算海面高度，通过多次调用sea_octave函数叠加不同频率的波浪，得到最终的海面高度值，map_detail用于更精细的计算。
+5.2 海面法线计算函数
+getNormal函数：计算海面法线，通过对海面高度函数在不同方向上的微小偏移计算高度差，从而得到海面法线向量，用于光照计算。
+5.3 海面颜色计算函数
+getSeaColor和getSeaColor_Ph函数：计算海面颜色，考虑菲涅尔反射、反射和折射光线、PBR 着色结果、距离衰减以及高光等因素，合成最终的海面颜色。
+六、光线追踪与场景绘制函数
+6.1 光线追踪函数
+is_hit_ball函数：判断光线是否与球体相交，通过计算光线与球体中心的距离和相对位置，确定是否相交并返回相交结果。
+heightMapTracing函数：进行海面高度图光线追踪，通过迭代计算光线与海面的交点，返回交点距离、位置和相交类型。
+6.2 颜色计算函数
+get_color和get_color_without_sun函数：计算场景最终颜色，根据光线追踪结果，分别计算天空、海面颜色，并考虑雾效、太阳绘制等因素，合成最终的场景颜色。
+七、其他函数
+7.1 辅助计算函数
+fromEuler函数：将欧拉角转换为旋转矩阵，用于物体的旋转计算。
+hash和noise函数：实现哈希函数和噪声函数，用于生成随机噪声，模拟自然纹理。
+diffuse和specular函数：计算漫反射和镜面反射强度的简单模型，在部分场景计算中使用。
+get_tbn函数：计算切线空间矩阵（Tangent - Bitangent - Normal，TBN），用于将向量从世界空间转换到切线空间，在 PBR 计算和环境光采样中使用。
+7.2 环境光采样函数
+sample_env_texture函数：对环境纹理进行采样，根据方向向量转换为纹理坐标，通过高斯滤波进行纹理采样，获取环境光颜色。
+get_env_color函数：计算环境光对物体的影响，通过多次采样环境纹理并结合 PBR 计算，得到物体表面的环境光颜色。
+以上是对这段代码功能的详细梳理。若你觉得某些部分需要更深入解释，或发现文档存在问题，欢迎随时告知。
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
-
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript and enable type-aware lint rules. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
