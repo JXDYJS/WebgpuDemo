@@ -1,6 +1,6 @@
 
 import { useEffect, useRef, useState } from 'react';
-
+import wgslPreprocessor from 'wgsl-preprocessor';
 
 
 
@@ -94,13 +94,18 @@ export default function WaterDemo({ resolutionScale, SunAngle,roughness,metallic
           size: 256,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
+        const baseURL = new URL('./src/shader/', window.location.href).href;
+        console.log("BaseURL : ", baseURL);
+        wgslPreprocessor.setBasePath(baseURL);
         var shaderCode;
         const pre_shaderCode = await loadCombinedShaders({ file1: "waterdemo.wgsl", file2: "prepra.wgsl" });
         if(!env){
           shaderCode = await loadCombinedShaders({ file1: "waterdemo.wgsl", file2: "main.wgsl" });
         }
         else{
-          shaderCode = await loadCombinedShaders({ file1: "waterdemo.wgsl", file2: "main_env.wgsl" });
+          //shaderCode = await loadCombinedShaders({ file1: "waterdemo.wgsl", file2: "main_env.wgsl" });
+          shaderCode = await wgslPreprocessor.readFile('test_main.wgsl');
+          console.log("Code : ", shaderCode);
         }
 
         

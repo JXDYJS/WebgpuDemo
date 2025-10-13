@@ -1,3 +1,4 @@
+
 struct Uniforms {
     iTime: f32,
     @align(8) iResolution: vec2<f32>,
@@ -59,7 +60,7 @@ const light_dist : f32 = 2.0;
 const light_speed : f32 = 5.0;
 const light_strength : f32 = 1.0;
 const ball_material:Material = Material(vec3(0.8,0.5,0.5),vec3(0.04),0.1,0.0);
-const env_sample_size:f32 = 32;
+const env_sample_size:f32 = 128;
 const KERNEL_5: array<f32, 5> = array<f32, 5>(
     0.0625, 
     0.25, 
@@ -976,7 +977,7 @@ fn get_env_color(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,sun_color: vec3<f32>,moon_c
     let metallic = ball.metallic;
     for(var i:f32 = 0; i < env_sample_size; i+=1){
         let hash_uv = vec2<f32>(hash(vec2(i / env_sample_size) + vec2(0.62,0.32)),hash(vec2(i / env_sample_size) + vec2(0.32,0.62)));
-        let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(0.5),hash_uv);
+        let microfacet_normal = tbn * sample_ggx_vndf(-(v * tbn),vec2(1.0),hash_uv);
         let rl = reflect(v,microfacet_normal);
         let h = normalize(-v + rl);
         let pbr_env_res = pbr_env(base_color,roughness,f0,metallic,n,rl,-v,h);

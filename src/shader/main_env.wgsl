@@ -46,9 +46,9 @@ fn get_pixel(uv:vec2<f32>,sun_color: vec3<f32>,moon_color: vec3<f32>,ambient:vec
         let ambient = sun_color * (n + 0.5) * 0.3 * base_color;
         color += ambient * 0.05 * max((1 - metallic),0.2);
         let env_res = pbr_env(base_color,roughness,ball.f0,metallic,nor,normalize(r),-dir,normalize(-dir + r));
-        color += (mix(scene_color * env_res,env_color,roughness)) * (1 - roughness);
+        color = (mix(scene_color * env_res,env_color,roughness));
 
-        color = ACESToneMapping(color,0.5);
+        color = ACESToneMapping(color,1.0);
     }
     else{
         color = scene_color;
@@ -96,6 +96,7 @@ fn fragment_main(@location(0) uv: vec2<f32>,@location(1) color: vec4<f32>,
         get_pixel(uv, sun_color, moon_color, ambient),
         vec3f(0.65)
     );
+    //let pixel = textureSample(env_texture,env_sampler,vec2(uv.x,1.0 - uv.y)).rgb;
     return vec4f(pixel, 1.0);
 }
 
